@@ -1,0 +1,20 @@
+{
+  "name": "retro-prescription-digitizer",
+  "version": "1.0.0",
+  "description": "Modern AI tool that digitizes and validates handwritten medical prescriptions",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "cd server && npm run dev",
+    "client": "cd client && npm run dev",
+    "install-all": "npm install && cd server && npm install && cd ../client && npm install",
+    "build": "cd client && npm run build"
+  },
+  "keywords": ["prescription", "ocr", "tensorflow", "ai", "healthcare"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
+
