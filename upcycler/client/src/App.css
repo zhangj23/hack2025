@@ -1,0 +1,6 @@
+/* Additional custom styles if needed */
+
+canvas {
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+}
