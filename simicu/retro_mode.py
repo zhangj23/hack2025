@@ -110,6 +110,21 @@ class RetroSimICU:
             self.waiting_bg_raw = None
         self._waiting_bg_cache = {}
 
+        # Ventilator bed and occupied sprites
+        vent_bed_path = os.path.join(base_dir, "sprites", "vent_bed.png")
+        try:
+            self.vent_bed_raw = pygame.image.load(vent_bed_path).convert_alpha()
+        except Exception:
+            self.vent_bed_raw = None
+        self._vent_bed_cache = {}
+
+        vent_patient_path = os.path.join(base_dir, "sprites", "vent_patient.png")
+        try:
+            self.vent_patient_raw = pygame.image.load(vent_patient_path).convert_alpha()
+        except Exception:
+            self.vent_patient_raw = None
+        self._vent_patient_cache = {}
+
         # Object position maps for animation targets
         self.bed_positions = {}   # bed -> (x, y, w, h)
         self.vent_positions = {}  # vent -> (x, y, w, h)
@@ -122,6 +137,11 @@ class RetroSimICU:
         self.nurse_paths = {}      # nurse -> [(x, y), ...] waypoints
         self.pending_assignments = []  # [{'nurse': Nurse, 'patient': Patient, 'bed': Bed}]
         self.input_cooldown_ticks = 0  # limit human action rate
+
+        # Patient walking/reservations
+        self.patient_moves = {}  # patient -> {'x','y','tx','ty','speed'}
+        self.reserved_beds = set()  # set of Bed reserved awaiting nurse arrival
+        self.reserved_bed_to_patient = {}  # Bed -> Patient
         
         # UI layout
         self.waiting_room_y = 50
@@ -131,10 +151,29 @@ class RetroSimICU:
         self.ui_panel_x = 900
         self.ui_panel_width = 300
     
-    def draw_patient(self, patient, x, y, width=100, height=80, minimal=False):
+    def draw_patient(self, patient, x, y, width=100, height=80, minimal=False, bar_only=False):
         """Draw a patient.
         minimal=True renders only the life bar (used for waiting room).
         """
+        # Bar-only mode: show ONLY the health bar (used while walking to bed)
+        if bar_only:
+            # Draw sprite (no box/labels) if available
+            if self.patient_sprite_raw:
+                key = (width, height, "bar_only")
+                if key not in self._patient_sprite_cache:
+                    src_w, src_h = self.patient_sprite_raw.get_size()
+                    scale = min(width / src_w, height / src_h)
+                    scaled = (max(1, int(src_w * scale)), max(1, int(src_h * scale)))
+                    self._patient_sprite_cache[key] = pygame.transform.smoothscale(self.patient_sprite_raw, scaled)
+                sprite = self._patient_sprite_cache[key]
+                draw_x = x + (width - sprite.get_width()) // 2
+                draw_y = y + (height - sprite.get_height()) // 2
+                self.screen.blit(sprite, (draw_x, draw_y))
+            bar_width = int((patient.severity / 100.0) * width)
+            bar_color = GREEN if patient.severity >= 70 else ORANGE if patient.severity >= 40 else RED
+            pygame.draw.rect(self.screen, bar_color, (x, y + height - 10, bar_width, 10))
+            return
+
         if minimal:
             # Waiting room: show standing sprite (if available) + life bar + number only.
             # Pick which sprite to show: sitting by default, standing when selected
@@ -504,6 +543,13 @@ class RetroSimICU:
                                     self.game.assign_patient_to_bed(patient)
                             except Exception:
                                 self.game.assign_patient_to_bed(patient)
+                            # Clear reservation and walking state upon actual assignment
+                            if bed in getattr(self, "reserved_beds", set()):
+                                self.reserved_beds.discard(bed)
+                            if hasattr(self, "reserved_bed_to_patient"):
+                                self.reserved_bed_to_patient.pop(bed, None)
+                            if hasattr(self, "patient_moves"):
+                                self.patient_moves.pop(patient, None)
                             continue  # completed
                     remaining.append(task)
                     continue
@@ -518,22 +564,79 @@ class RetroSimICU:
                                 self.game.assign_patient_to_ventilator(patient)
                             except Exception:
                                 self.game.assign_patient_to_ventilator(patient)
+                            # Stop rendering the walking patient once nurse attends at the vent
+                            if hasattr(self, "patient_moves"):
+                                self.patient_moves.pop(patient, None)
                             continue  # completed
                     remaining.append(task)
                     continue
             self.pending_assignments = remaining
+
+    def _update_patient_moves(self):
+        """Animate patients walking from waiting room to reserved beds."""
+        if not self.patient_moves:
+            return
+        finished = []
+        for patient, move in list(self.patient_moves.items()):
+            # If patient has been assigned to a bed or ventilator, stop drawing walking sprite
+            if getattr(patient, "assigned_bed", None) is not None or getattr(patient, "assigned_ventilator", None) is not None:
+                self.patient_moves.pop(patient, None)
+                # also clear any bed reservation tied to this patient
+                for b, p in list(getattr(self, "reserved_bed_to_patient", {}).items()):
+                    if p is patient:
+                        self.reserved_bed_to_patient.pop(b, None)
+                        if hasattr(self, "reserved_beds"):
+                            self.reserved_beds.discard(b)
+                continue
+            cx, cy = move['x'], move['y']
+            tx, ty = move['tx'], move['ty']
+            dx, dy = tx - cx, ty - cy
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist < 1.0:
+                # Arrived at bed tile; mark as visually present (reservation already set)
+                move['x'], move['y'] = float(tx), float(ty)
+                finished.append(patient)
+                continue
+            step = min(move['speed'], dist)
+            if dist > 0:
+                move['x'] = cx + dx / dist * step
+                move['y'] = cy + dy / dist * step
+        # Keep moves until nurse assigns; we only remove when nurse assignment completes
+        # (no removal here)
     
-    def draw_ventilator(self, vent, x, y, width=100, height=60):
-        """Draw a ventilator icon"""
-        color = LIGHT_GRAY if vent.available else DARK_GRAY
-        pygame.draw.rect(self.screen, color, (x, y, width, height))
-        pygame.draw.rect(self.screen, BLACK, (x, y, width, height), 2)
-        
-        # Ventilator label
-        label = "VENT" if vent.available else "IN USE"
-        label_text = self.small_font.render(label, True, BLACK if vent.available else WHITE)
-        text_rect = label_text.get_rect(center=(x + width // 2, y + height // 2))
-        self.screen.blit(label_text, text_rect)
+    def draw_ventilator(self, vent, x, y, width=120, height=120):
+        """Draw a ventilator bed. If occupied, show vent_patient sprite; else vent_bed sprite.
+        Always overlay the patient's health bar when occupied.
+        """
+        occupied = not vent.available
+        # Background sprite
+        if not occupied:
+            if getattr(self, "vent_bed_raw", None):
+                key = (width, height)
+                if key not in self._vent_bed_cache:
+                    self._vent_bed_cache[key] = pygame.transform.smoothscale(self.vent_bed_raw, (width, height))
+                self.screen.blit(self._vent_bed_cache[key], (x, y))
+            else:
+                pygame.draw.rect(self.screen, LIGHT_GRAY, (x, y, width, height))
+            pygame.draw.rect(self.screen, GREEN, (x, y, width, height), 2)
+        else:
+            if getattr(self, "vent_patient_raw", None):
+                key = (width, height)
+                if key not in self._vent_patient_cache:
+                    self._vent_patient_cache[key] = pygame.transform.smoothscale(self.vent_patient_raw, (width, height))
+                self.screen.blit(self._vent_patient_cache[key], (x, y))
+            else:
+                pygame.draw.rect(self.screen, DARK_GRAY, (x, y, width, height))
+            pygame.draw.rect(self.screen, RED, (x, y, width, height), 2)
+            # Overlay health bar for the patient on this ventilator
+            try:
+                from sim_icu_logic import PatientStatus  # local import to avoid circulars at top
+                patient = next(p for p in self.game.patients if p.assigned_ventilator == vent and p.status == PatientStatus.ON_VENTILATOR)
+                bar_width = int((patient.severity / 100.0) * width)
+                bar_color = GREEN if patient.severity >= 70 else ORANGE if patient.severity >= 40 else RED
+                pygame.draw.rect(self.screen, bar_color, (x, y + height - 10, bar_width, 10))
+            except StopIteration:
+                pass
         # Record for nurse animation targeting
         self.vent_positions[vent] = (x, y, width, height)
     
@@ -664,6 +767,24 @@ class RetroSimICU:
                         nearest = min(available_nurses, key=dist2)
                         # Queue assignment: nurse will run to bed, then we assign
                         self.pending_assignments.append({'nurse': nearest, 'patient': self.selected_patient, 'bed': bed})
+                        # Start patient walking from their waiting slot
+                        waiting_patients = self.game.get_waiting_patients()
+                        try:
+                            idx = waiting_patients.index(self.selected_patient)
+                        except ValueError:
+                            idx = 0
+                        start_x = 50 + idx * 120
+                        start_y = self.waiting_room_y + 20
+                        self.patient_moves[self.selected_patient] = {
+                            'x': float(start_x),
+                            'y': float(start_y),
+                            'tx': bx + 10,
+                            'ty': by - 20,
+                            'speed': 25.0
+                        }
+                        # Reserve bed
+                        self.reserved_beds.add(bed)
+                        self.reserved_bed_to_patient[bed] = self.selected_patient
                         # Small input cooldown to simulate human latency
                         self.input_cooldown_ticks = 8
                         self.selected_patient = None
@@ -673,34 +794,40 @@ class RetroSimICU:
             vent_x_start = 50
             for i, vent in enumerate(self.game.ventilators):
                 vent_x = vent_x_start
-                vent_y = self.bed_area_y + 50 + i * 80
-                if (vent_x <= x <= vent_x + 100 and 
-                    vent_y <= y <= vent_y + 60):
+                vent_y = self.bed_area_y + 50 + i * 120
+                if (vent_x <= x <= vent_x + 120 and 
+                    vent_y <= y <= vent_y + 120):
                     if self.selected_patient and vent.available:
-                        # Queue ventilator assignment with nearest available nurse.
+                        # Queue ventilator assignment: nurse must attend, so send nearest available nurse
                         available_nurses = [n for n in self.game.nurses if n.available]
                         if not available_nurses:
                             return
-                        # Target current patient's bed if any, else target this ventilator panel
-                        if self.selected_patient.assigned_bed and self.selected_patient.assigned_bed in self.bed_positions:
-                            tx, ty, tw, th = self.bed_positions[self.selected_patient.assigned_bed]
-                            target_x = tx + tw - self.nurse_size
-                            target_y = ty
-                        else:
-                            target_x = vent_x
-                            target_y = vent_y
                         for n in available_nurses:
                             if n not in self.nurse_positions:
                                 self.nurse_positions[n] = self.nurse_stations.get(n, (850, self.bed_area_y + 50))
                         def dist2(n):
-                            nx, ny = self.nurse_positions.get(n, (target_x, target_y))
-                            dx = nx - target_x
-                            dy = ny - target_y
+                            nx, ny = self.nurse_positions.get(n, (vent_x, vent_y))
+                            dx = nx - vent_x
+                            dy = ny - vent_y
                             return dx * dx + dy * dy
                         nearest = min(available_nurses, key=dist2)
-                        # Queue a 'vent' pending assignment; assignment will occur on arrival
                         self.pending_assignments.append({'nurse': nearest, 'patient': self.selected_patient, 'vent': vent})
-                        self.input_cooldown_ticks = 8
+                        # Start patient walk animation toward ventilator panel (visual only)
+                        waiting_patients = self.game.get_waiting_patients()
+                        try:
+                            idx = waiting_patients.index(self.selected_patient)
+                        except ValueError:
+                            idx = 0
+                        start_x = 50 + idx * 120
+                        start_y = self.waiting_room_y + 20
+                        self.patient_moves[self.selected_patient] = {
+                            'x': float(start_x),
+                            'y': float(start_y),
+                            'tx': vent_x + 10,
+                            'ty': vent_y - 20,
+                            'speed': 25.0
+                        }
+                        self.input_cooldown_ticks = 6
                         self.selected_patient = None
                     return
     
@@ -709,6 +836,11 @@ class RetroSimICU:
         self.screen.fill(BLACK)
         if self.show_intro:
             return self.draw_intro_overlay()
+
+        # Update actor positions first so rendering reflects latest arrivals/assignments
+        # (e.g., remove waiting-room sprite the instant a nurse reaches bed/vent)
+        self._update_nurse_positions(size=self.nurse_size)
+        self._update_patient_moves()
         
         # Draw waiting room
         waiting_title = self.font.render("WAITING ROOM", self.retro_antialias, WHITE)
@@ -724,9 +856,11 @@ class RetroSimICU:
             pygame.draw.rect(self.screen, DARK_GRAY, (wr_x, wr_y, wr_w, wr_h))
         pygame.draw.rect(self.screen, WHITE, (wr_x, wr_y, wr_w, wr_h), 2)
         
-        # Draw waiting patients
+        # Draw waiting patients (exclude those currently walking to beds/vents)
         waiting_patients = self.game.get_waiting_patients()
-        for i, patient in enumerate(waiting_patients[:6]):  # Show up to 6
+        moving_set = set(self.patient_moves.keys()) if hasattr(self, "patient_moves") else set()
+        visible_waiting = [p for p in waiting_patients if p not in moving_set]
+        for i, patient in enumerate(visible_waiting[:6]):  # Show up to 6
             # In waiting room show only health bar (no box/id/status)
             self.draw_patient(patient, 50 + i * 120, self.waiting_room_y + 20, minimal=True)
         
@@ -753,25 +887,41 @@ class RetroSimICU:
         
         for i, vent in enumerate(self.game.ventilators):
             vent_x = 50
-            vent_y = self.bed_area_y + 50 + i * 80
+            vent_y = self.bed_area_y + 50 + i * 120
             self.draw_ventilator(vent, vent_x, vent_y)
             
-            # Draw patient on ventilator if occupied
-            for patient in self.game.patients:
-                if patient.assigned_ventilator == vent:
-                    self.draw_patient(patient, vent_x + 10, vent_y - 20, 100, 60)
+            # If no vent_patient sprite is available, fall back to drawing the patient overlay.
+            if not getattr(self, "vent_patient_raw", None):
+                for patient in self.game.patients:
+                    if patient.assigned_ventilator == vent and patient.status == PatientStatus.ON_VENTILATOR:
+                        self.draw_patient(patient, vent_x + 10, vent_y - 20, 100, 60)
         
+        # Draw moving patients (walking from waiting room to reserved bed) - bar only
+        if self.patient_moves:
+            for patient, move in list(self.patient_moves.items()):
+                # If patient is no longer active (cured/lost), stop rendering movement
+                if patient.status in [PatientStatus.CURED, PatientStatus.LOST]:
+                    self.patient_moves.pop(patient, None)
+                    continue
+                self.draw_patient(
+                    patient,
+                    int(move['x']),
+                    int(move['y']),
+                    width=100,
+                    height=80,
+                    minimal=False,
+                    bar_only=True
+                )
+
         # Draw nurses (animated between station and patient)
         nurse_title = self.font.render("NURSES", self.retro_antialias, WHITE)
         self.screen.blit(nurse_title, (850, self.bed_area_y - 30))
-        # Define stations and update positions
+        # Define stations (positions already updated above)
         for i, nurse in enumerate(self.game.nurses):
             station_x = 850
             station_y = self.bed_area_y + 50 + i * 56
             self.nurse_stations[nurse] = (station_x, station_y)
-        # Move nurses toward their targets
-        self._update_nurse_positions(size=self.nurse_size)
-        # Draw at current positions
+        # Draw nurses at current positions
         for nurse in self.game.nurses:
             nx, ny = self.nurse_positions.get(nurse, self.nurse_stations[nurse])
             self.draw_nurse(nurse, int(nx), int(ny), self.nurse_size)
