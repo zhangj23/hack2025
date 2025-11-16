@@ -1051,6 +1051,49 @@ class RetroSimICU:
                                   b_y + (b_h - b_text.get_height()) // 2))
         self._rules_back_button = (b_x, b_y, b_w, b_h)
         pygame.display.flip()
+
+    # --- AI Controller Helpers (non-intrusive; reuse existing click logic) ---
+    def ai_select_patient(self, patient_id: int) -> bool:
+        """Programmatically select a waiting patient by id (simulates a click in waiting room)."""
+        waiting = self.game.get_waiting_patients()
+        for i, p in enumerate(waiting):
+            if p.id == patient_id:
+                px = 50 + i * 120 + 50  # center of waiting tile
+                py = self.waiting_room_y + 20 + 40
+                self.handle_click((px, py))
+                return True
+        return False
+
+    def ai_click_bed(self, bed_index: int) -> bool:
+        """Programmatically click a bed tile by index (simulates bed click)."""
+        if bed_index < 0 or bed_index >= len(self.game.beds):
+            return False
+        bed_x = 200 + (bed_index % 4) * 150
+        bed_y = self.bed_area_y + 50 + (bed_index // 4) * 120
+        cx = bed_x + 60
+        cy = bed_y + 60
+        self.handle_click((cx, cy))
+        return True
+
+    def ai_click_vent(self, vent_index: int) -> bool:
+        """Programmatically click a ventilator tile by index (simulates vent click)."""
+        if vent_index < 0 or vent_index >= len(self.game.ventilators):
+            return False
+        vent_x = 50
+        vent_y = self.bed_area_y + 50 + vent_index * 120
+        cx = vent_x + 60
+        cy = vent_y + 60
+        self.handle_click((cx, cy))
+        return True
+
+    def ai_tick(self, ticks: int = 1):
+        """Advance the simulation by N ticks (respects the same timing as manual play)."""
+        for _ in range(max(1, ticks)):
+            self._update_nurse_positions(size=self.nurse_size)
+            self._update_patient_moves()
+            self.game.update_tick()
+            if self.input_cooldown_ticks > 0:
+                self.input_cooldown_ticks -= 1
     
     def run(self):
         """Main game loop"""
