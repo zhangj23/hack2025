@@ -7,7 +7,7 @@ import pygame
 import sys
 import os
 import math
-from sim_icu_logic import SimICU, PatientStatus
+from sim_icu_logic import SimICU, PatientStatus, PatientType
 
 
 # Colors (retro palette)
@@ -166,6 +166,19 @@ class RetroSimICU:
             life_value = int(round(patient.severity))
             value_text = self.small_font.render(f"{life_value}", True, WHITE)
             self.screen.blit(value_text, (x + 5, y + 5))
+            # Type badge (top-right)
+            try:
+                t = patient.patient_type
+                t_letter = "R" if t == PatientType.RESPIRATORY else "C" if t == PatientType.CARDIAC else "T"
+                badge = self.small_font.render(t_letter, self.retro_antialias, BLACK)
+                bw, bh = badge.get_size()
+                pad = 4
+                bx = x + width - bw - pad - 2
+                by = y + 2
+                pygame.draw.rect(self.screen, YELLOW, (bx - 2, by - 2, bw + 4, bh + 4))
+                self.screen.blit(badge, (bx, by))
+            except Exception:
+                pass
             return
         # If we have a sprite, draw it scaled; otherwise fallback to colored box
         drew_sprite = False
@@ -213,6 +226,20 @@ class RetroSimICU:
         life_value = int(round(patient.severity))
         severity_text = self.small_font.render(f"{life_value}", True, WHITE)
         self.screen.blit(severity_text, (x + 5, y + 35))
+
+        # Patient type badge (top-right)
+        try:
+            t = patient.patient_type
+            t_letter = "R" if t == PatientType.RESPIRATORY else "C" if t == PatientType.CARDIAC else "T"
+            badge = self.small_font.render(t_letter, self.retro_antialias, BLACK)
+            bw, bh = badge.get_size()
+            pad = 4
+            bx = x + width - bw - pad - 2
+            by = y + 2
+            pygame.draw.rect(self.screen, YELLOW, (bx - 2, by - 2, bw + 4, bh + 4))
+            self.screen.blit(badge, (bx, by))
+        except Exception:
+            pass
         
         # Highlight if selected
         if self.selected_patient == patient:
@@ -264,6 +291,28 @@ class RetroSimICU:
             label_text = self.small_font.render(label, True, BLACK if bed.available else WHITE)
             text_rect = label_text.get_rect(center=(x + width // 2, y + height // 2))
             self.screen.blit(label_text, text_rect)
+        # If bed is occupied, draw the patient's life bar on top of the bed
+        if not bed.available:
+            try:
+                patient = next(p for p in self.game.patients if p.assigned_bed == bed)
+                bar_width = int((patient.severity / 100.0) * width)
+                bar_color = GREEN if patient.severity >= 70 else ORANGE if patient.severity >= 40 else RED
+                pygame.draw.rect(self.screen, bar_color, (x, y + height - 10, bar_width, 10))
+                # Optional: small id tag in corner
+                id_text = self.small_font.render(f"#{patient.id}", self.retro_antialias, WHITE)
+                self.screen.blit(id_text, (x + 4, y + 4))
+                # Type badge
+                t = patient.patient_type
+                t_letter = "R" if t == PatientType.RESPIRATORY else "C" if t == PatientType.CARDIAC else "T"
+                badge = self.small_font.render(t_letter, self.retro_antialias, BLACK)
+                bw, bh = badge.get_size()
+                pad = 4
+                bx = x + width - bw - pad - 2
+                by = y + 2
+                pygame.draw.rect(self.screen, YELLOW, (bx - 2, by - 2, bw + 4, bh + 4))
+                self.screen.blit(badge, (bx, by))
+            except StopIteration:
+                pass
     
     def draw_nurse(self, nurse, x, y, size=40):
         """Draw a nurse icon at the given coordinates."""
@@ -284,11 +333,15 @@ class RetroSimICU:
         if size is None:
             size = self.nurse_size
         """Compute the target (x, y) for a nurse: patient location if assigned, else station."""
-        # If a pending assignment exists for this nurse, head to that bed
+        # If a pending assignment exists for this nurse, head to that bed/vent
         for task in self.pending_assignments:
-            if task['nurse'] == nurse and task['bed'] in self.bed_positions:
-                tx, ty, tw, th = self.bed_positions[task['bed']]
-                return tx + tw - size, ty
+            if task.get('nurse') == nurse:
+                if 'bed' in task and task['bed'] in self.bed_positions:
+                    tx, ty, tw, th = self.bed_positions[task['bed']]
+                    return tx + tw - size, ty
+                if 'vent' in task and task['vent'] in self.vent_positions:
+                    vx, vy, vw, vh = self.vent_positions[task['vent']]
+                    return vx, vy
         # If assigned, target the patient's bed/vent center
         if not nurse.available:
             assigned_patient = None
@@ -379,40 +432,52 @@ class RetroSimICU:
                 new_x, new_y = wx, wy
             self.nurse_positions[nurse] = (new_x, new_y)
 
-        # Check pending assignments: if nurse reached bed, perform assignment now
+        # Check pending assignments: if nurse reached target (bed or vent), perform assignment now
         if self.pending_assignments:
             remaining = []
             for task in self.pending_assignments:
                 nurse = task['nurse']
                 patient = task['patient']
-                bed = task['bed']
-                # Bed rect
-                if bed in self.bed_positions and nurse in self.nurse_positions:
-                    bx, by, bw, bh = self.bed_positions[bed]
-                    nx, ny = self.nurse_positions[nurse]
-                    # Simple proximity check using both rectangle containment and target corner distance
-                    reached_rect = (bx - 4) <= nx <= (bx + bw + 4) and (by - 4) <= ny <= (by + bh + 4)
-                    # Target point near top-right corner used by _get_nurse_target
-                    target_x = bx + bw - size
-                    target_y = by
-                    dx_t = nx - target_x
-                    dy_t = ny - target_y
-                    reached_target = (dx_t * dx_t + dy_t * dy_t) ** 0.5 <= 8
-                    if reached_rect or reached_target:
-                        # Assign this patient to the specific clicked bed with this nurse
-                        # so we don't accidentally pick some other available bed.
-                        # Use the engine's explicit assignment to keep counters correct.
-                        try:
-                            # Assign using explicit API if available
-                            if hasattr(self.game, "assign_patient_to_specific_bed"):
-                                self.game.assign_patient_to_specific_bed(patient, bed, nurse)
-                            else:
-                                # Fallback to generic assignment (may pick first free bed)
+                nx, ny = self.nurse_positions.get(nurse, (None, None))
+                if nx is None:
+                    remaining.append(task)
+                    continue
+                # Bed-targeted task
+                if 'bed' in task:
+                    bed = task['bed']
+                    if bed in self.bed_positions:
+                        bx, by, bw, bh = self.bed_positions[bed]
+                        reached_rect = (bx - 4) <= nx <= (bx + bw + 4) and (by - 4) <= ny <= (by + bh + 4)
+                        target_x = bx + bw - size
+                        target_y = by
+                        dx_t = nx - target_x
+                        dy_t = ny - target_y
+                        reached_target = (dx_t * dx_t + dy_t * dy_t) ** 0.5 <= 8
+                        if reached_rect or reached_target:
+                            try:
+                                if hasattr(self.game, "assign_patient_to_specific_bed"):
+                                    self.game.assign_patient_to_specific_bed(patient, bed, nurse)
+                                else:
+                                    self.game.assign_patient_to_bed(patient)
+                            except Exception:
                                 self.game.assign_patient_to_bed(patient)
-                        except Exception:
-                            self.game.assign_patient_to_bed(patient)
-                        continue  # done with this task
-                remaining.append(task)
+                            continue  # completed
+                    remaining.append(task)
+                    continue
+                # Vent-targeted task
+                if 'vent' in task:
+                    vent = task['vent']
+                    if vent in self.vent_positions:
+                        vx, vy, vw, vh = self.vent_positions[vent]
+                        reached_rect = (vx - 4) <= nx <= (vx + vw + 4) and (vy - 4) <= ny <= (vy + vh + 4)
+                        if reached_rect:
+                            try:
+                                self.game.assign_patient_to_ventilator(patient)
+                            except Exception:
+                                self.game.assign_patient_to_ventilator(patient)
+                            continue  # completed
+                    remaining.append(task)
+                    continue
             self.pending_assignments = remaining
     
     def draw_ventilator(self, vent, x, y, width=100, height=60):
@@ -527,7 +592,7 @@ class RetroSimICU:
         
         # Check if clicking on beds
         if y >= self.bed_area_y and y <= self.bed_area_y + self.bed_area_height:
-            bed_x_start = 50
+            bed_x_start = 200
             bed_y = self.bed_area_y + 50
             for i, bed in enumerate(self.game.beds):
                 bed_x = bed_x_start + (i % 4) * 150
@@ -561,15 +626,38 @@ class RetroSimICU:
                         self.selected_patient = None
                     return
             
-            # Check ventilators (to the right of beds)
-            vent_x_start = 700
+            # Check ventilators (now on the left side)
+            vent_x_start = 50
             for i, vent in enumerate(self.game.ventilators):
                 vent_x = vent_x_start
                 vent_y = self.bed_area_y + 50 + i * 80
                 if (vent_x <= x <= vent_x + 100 and 
                     vent_y <= y <= vent_y + 60):
                     if self.selected_patient and vent.available:
-                        self.game.assign_patient_to_ventilator(self.selected_patient)
+                        # Queue ventilator assignment with nearest available nurse.
+                        available_nurses = [n for n in self.game.nurses if n.available]
+                        if not available_nurses:
+                            return
+                        # Target current patient's bed if any, else target this ventilator panel
+                        if self.selected_patient.assigned_bed and self.selected_patient.assigned_bed in self.bed_positions:
+                            tx, ty, tw, th = self.bed_positions[self.selected_patient.assigned_bed]
+                            target_x = tx + tw - self.nurse_size
+                            target_y = ty
+                        else:
+                            target_x = vent_x
+                            target_y = vent_y
+                        for n in available_nurses:
+                            if n not in self.nurse_positions:
+                                self.nurse_positions[n] = self.nurse_stations.get(n, (850, self.bed_area_y + 50))
+                        def dist2(n):
+                            nx, ny = self.nurse_positions.get(n, (target_x, target_y))
+                            dx = nx - target_x
+                            dy = ny - target_y
+                            return dx * dx + dy * dy
+                        nearest = min(available_nurses, key=dist2)
+                        # Queue a 'vent' pending assignment; assignment will occur on arrival
+                        self.pending_assignments.append({'nurse': nearest, 'patient': self.selected_patient, 'vent': vent})
+                        self.input_cooldown_ticks = 8
                         self.selected_patient = None
                     return
     
@@ -599,12 +687,12 @@ class RetroSimICU:
             # In waiting room show only health bar (no box/id/status)
             self.draw_patient(patient, 50 + i * 120, self.waiting_room_y + 20, minimal=True)
         
-        # Draw bed area
+        # Draw bed area (shifted right to make room for ventilators on the left)
         bed_title = self.font.render("ICU BEDS", self.retro_antialias, WHITE)
-        self.screen.blit(bed_title, (50, self.bed_area_y - 30))
+        self.screen.blit(bed_title, (200, self.bed_area_y - 30))
         
         for i, bed in enumerate(self.game.beds):
-            bed_x = 50 + (i % 4) * 150
+            bed_x = 200 + (i % 4) * 150
             bed_y = self.bed_area_y + 50 + (i // 4) * 120
             self.draw_bed(bed, bed_x, bed_y)
             
@@ -616,12 +704,12 @@ class RetroSimICU:
                     if patient.assigned_bed == bed:
                         self.draw_patient(patient, bed_x + 10, bed_y - 20, 100, 60)
         
-        # Draw ventilators
+        # Draw ventilators (moved to the left side)
         vent_title = self.font.render("VENTILATORS", self.retro_antialias, WHITE)
-        self.screen.blit(vent_title, (700, self.bed_area_y - 30))
+        self.screen.blit(vent_title, (50, self.bed_area_y - 30))
         
         for i, vent in enumerate(self.game.ventilators):
-            vent_x = 700
+            vent_x = 50
             vent_y = self.bed_area_y + 50 + i * 80
             self.draw_ventilator(vent, vent_x, vent_y)
             
