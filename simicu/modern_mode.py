@@ -74,7 +74,7 @@ class ModernSimICU:
         self.show_emr = False
 
         # Nurse render size
-        self.nurse_size = 56
+        self.nurse_size = 64
 
         # Patient sprite (standing/selected) -> raised hand variant
         base_dir = os.path.dirname(__file__)
@@ -420,7 +420,7 @@ class ModernSimICU:
         
         # Draw nurses (starting positions moved up by 50px)
         for i, nurse in enumerate(self.env.game.nurses):
-            self.draw_nurse(nurse, 850, self.bed_area_y + 0 + i * 56, self.nurse_size)
+            self.draw_nurse(nurse, 830, self.bed_area_y + 0 + i * 56, self.nurse_size)
         
         # Draw UI panel
         self.draw_ui_panel()
