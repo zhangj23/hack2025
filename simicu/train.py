@@ -28,10 +28,10 @@ def train_agent(total_timesteps=100000, save_path="models/sim_icu_ai_agent"):
     
     print("\n1. Creating environment...")
     # Vectorized training environment (4 parallel envs) with curriculum: easy first (arrival 0.05)
-    env = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.03)), n_envs=4)
+    env = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.05)), n_envs=4)
  
     # Create evaluation environment (harder arrival rate to measure true performance)
-    eval_env = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.08)), n_envs=1)
+    eval_env = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.07)), n_envs=1)
     
     # Create the AI agent using PPO (Proximal Policy Optimization)
     print("2. Creating PPO agent...")
@@ -98,7 +98,7 @@ def train_agent(total_timesteps=100000, save_path="models/sim_icu_ai_agent"):
 
     if stage2 > 0:
         # Switch to harder environment
-        env_hard = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.10)), n_envs=4)
+        env_hard = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.08)), n_envs=4)
         model.set_env(env_hard)
         model.learn(
             total_timesteps=stage2,
@@ -134,25 +134,18 @@ def test_agent(model, num_episodes=5):
         eval_env = Monitor(SimICUEnv(max_patients=10, max_ticks=1000, render_mode=None))
         obs, info = eval_env.reset()
         done = False
-        episode_saved = 0
-        episode_lost = 0
-        last_info = {}
+        # stepping only; we will read final score after the loop
         
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, info = eval_env.step(action)
             done = terminated or truncated
-            last_info = info or last_info
-            # Track running maxima (env returns cumulative totals)
-            if info.get('patients_saved', 0) > episode_saved:
-                episode_saved = info['patients_saved']
-            if info.get('patients_lost', 0) > episode_lost:
-                episode_lost = info['patients_lost']
         
-        # Fallback to final info snapshot if loop ended early without updates
-        if episode_saved == 0 and episode_lost == 0 and last_info:
-            episode_saved = last_info.get('patients_saved', 0)
-            episode_lost = last_info.get('patients_lost', 0)
+        # Read final score from the environment
+        base_env = eval_env.env if hasattr(eval_env, 'env') else eval_env
+        final_score = base_env.game.get_score()
+        episode_saved = final_score['patients_saved']
+        episode_lost = final_score['patients_lost']
 
         total_saved += episode_saved
         total_lost += episode_lost

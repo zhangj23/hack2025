@@ -111,8 +111,8 @@ def main(model_path: str = "models/sim_icu_ai_agent"):
         if (not applied) and ui.input_cooldown_ticks == 0 and not ui.patient_moves and not ui.pending_assignments:
             waiting = ui.game.get_waiting_patients()
             if waiting:
-                # Pick the most critical: sort by severity, then waiting time
-                waiting.sort(key=lambda p: (p.severity, p.time_waiting), reverse=True)
+                # Most critical: lowest life first; tie-break by longer wait
+                waiting.sort(key=lambda p: (p.severity, -p.time_waiting))
                 best = waiting[0]
                 if ui.selected_patient is None:
                     ui.ai_select_patient(best.id)

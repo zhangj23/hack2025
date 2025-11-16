@@ -72,6 +72,7 @@ class RetroSimICU:
         self.paused = False
         self.show_intro = True
         self.game_over = False
+        self.final_score = None
 
         # Sprites
         base_dir = os.path.dirname(__file__)
@@ -1205,13 +1206,15 @@ class RetroSimICU:
             
             if not self.paused:
                 # Update game only when not on intro or rules screens
-                if (not self.show_intro) and (not getattr(self, "show_rules", False)):
+                if (not self.show_intro) and (not getattr(self, "show_rules", False)) and (not self.game_over):
                     self._frame_counter = (self._frame_counter + 1) % self.update_every_n_frames
                     if self._frame_counter == 0:
                         for _ in range(self.tick_speed):
                             self.game.update_tick()
                             if self.game.patients_lost >= 10:
                                 self.game_over = True
+                                # Snapshot the final score to freeze Saved/Lost
+                                self.final_score = self.game.get_score()
                                 break
                 # Decrement human input cooldown
                 if self.input_cooldown_ticks > 0:
@@ -1230,8 +1233,7 @@ class RetroSimICU:
         subtitle = self.large_font.render("Too many patients were lost.", self.retro_antialias, WHITE)
         self.screen.blit(title, ((self.width - title.get_width()) // 2, 140))
         self.screen.blit(subtitle, ((self.width - subtitle.get_width()) // 2, 195))
-
-        score = self.game.get_score()
+        score = self.final_score if self.final_score is not None else self.game.get_score()
         lines = [
             f"Saved: {score['patients_saved']}",
             f"Lost: {score['patients_lost']}",
