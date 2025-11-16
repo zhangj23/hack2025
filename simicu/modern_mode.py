@@ -568,13 +568,42 @@ class ModernSimICU:
              "How to Play:",
              " - The AI selects actions automatically each step.",
              " - You can pause with SPACE and reset with R.",
-             " - EMR overlay toggles with E."
+             " - EMR overlay toggles with E.",
+             " - You lose when 10 patients die. Try to get the highest score.",
+             "",
+             "Patient Types:",
+             " - R (Respiratory): Recovers faster on ventilator; standard bed recovery.",
+             " - C (Cardiac): Responds best to bed care (faster bed recovery). Dies faster once health <= 25.",
+             " - T (Trauma): Slower recovery overall; prioritize resources to avoid long waits. Deteriorates ~3x faster than Respiratory while waiting."
          ]
-         y = 170
-         for line in lines:
-             t = self.font.render(line, self.retro_antialias, WHITE if line and line[0] != ' ' else LIGHT_GRAY)
-             self.screen.blit(t, (80, y))
-             y += 28
+        y = 170
+        # helper to wrap within screen while preserving simple bullet indentation
+        def render_wrapped(text, color, y_pos, base_x=80):
+            if text == "":
+                return y_pos + 10
+            indent = text.startswith(" ")
+            max_width = self.width - base_x - 80
+            x = base_x + (20 if indent else 0)
+            words = (text.strip() if indent else text).split(" ")
+            line_buf = ""
+            while words:
+                nxt = words.pop(0)
+                candidate = f"{line_buf} {nxt}".strip()
+                if self.font.size(candidate)[0] <= max_width - (20 if indent else 0):
+                    line_buf = candidate
+                else:
+                    t = self.font.render(line_buf, self.retro_antialias, color)
+                    self.screen.blit(t, (x, y_pos))
+                    y_pos += 28
+                    line_buf = nxt
+            if line_buf:
+                t = self.font.render(line_buf, self.retro_antialias, color)
+                self.screen.blit(t, (x, y_pos))
+                y_pos += 28
+            return y_pos
+        for line in lines:
+            color = WHITE if line and line[0] != ' ' else LIGHT_GRAY
+            y = render_wrapped(line, color, y)
          # Back button
          b_w, b_h = 200, 50
          b_x = (self.width - b_w) // 2
