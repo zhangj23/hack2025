@@ -153,7 +153,7 @@ class RetroSimICU:
         self.nurse_positions = {}  # nurse -> (x, y)
         self.nurse_stations = {}   # nurse -> (x, y)
         self.nurse_speed = 60      # pixels per tick
-        self.nurse_size = 64       # draw size (bigger nurse)
+        self.nurse_size = 72       # draw size (slightly bigger nurse)
         self.nurse_paths = {}      # nurse -> [(x, y), ...] waypoints
         self.pending_assignments = []  # [{'nurse': Nurse, 'patient': Patient, 'bed': Bed}]
         self.input_cooldown_ticks = 0  # limit human action rate
@@ -417,7 +417,7 @@ class RetroSimICU:
                     # Aim near top-right corner
                     return tx + tw - size, ty
         # Otherwise, go to station
-        return self.nurse_stations.get(nurse, (850, self.bed_area_y + 0))
+        return self.nurse_stations.get(nurse, (830, self.bed_area_y + 0))
 
     def _row_corridor_y(self):
         """
@@ -462,7 +462,7 @@ class RetroSimICU:
             # Initialize position at station if unknown
             if nurse not in self.nurse_positions:
                 # Start idle nurses at their station
-                station_pos = self.nurse_stations.get(nurse, (850, self.bed_area_y + 0))
+                station_pos = self.nurse_stations.get(nurse, (830, self.bed_area_y + 0))
                 self.nurse_positions[nurse] = station_pos
                 self.nurse_paths[nurse] = []
                 continue
@@ -475,7 +475,7 @@ class RetroSimICU:
             # If idle, target should be station and avoid corridor to prevent oscillation
             use_corridor = not is_idle
             if is_idle:
-                target_x, target_y = self.nurse_stations.get(nurse, (850, self.bed_area_y + 0))
+                target_x, target_y = self.nurse_stations.get(nurse, (830, self.bed_area_y + 0))
                 # Snap to station if already very close
                 if abs(cur_x - target_x) <= 1 and abs(cur_y - target_y) <= 1:
                     self.nurse_positions[nurse] = (target_x, target_y)
@@ -791,7 +791,7 @@ class RetroSimICU:
                         # Ensure nurse positions initialized
                         for n in available_nurses:
                             if n not in self.nurse_positions:
-                                self.nurse_positions[n] = self.nurse_stations.get(n, (850, self.bed_area_y + 0))
+                                self.nurse_positions[n] = self.nurse_stations.get(n, (830, self.bed_area_y + 0))
                         # Pick nearest
                         def dist2(n):
                             nx, ny = self.nurse_positions.get(n, (target_x, target_y))
@@ -838,7 +838,7 @@ class RetroSimICU:
                             return
                         for n in available_nurses:
                             if n not in self.nurse_positions:
-                                self.nurse_positions[n] = self.nurse_stations.get(n, (850, self.bed_area_y + 0))
+                                self.nurse_positions[n] = self.nurse_stations.get(n, (830, self.bed_area_y + 0))
                         def dist2(n):
                             nx, ny = self.nurse_positions.get(n, (vent_x, vent_y))
                             dx = nx - vent_x
@@ -957,7 +957,7 @@ class RetroSimICU:
         # Draw nurses (animated between station and patient)
         # Define stations (positions already updated above)
         for i, nurse in enumerate(self.game.nurses):
-            station_x = 850
+            station_x = 830
             station_y = self.bed_area_y + 0 + i * 56
             self.nurse_stations[nurse] = (station_x, station_y)
         # Draw nurses at current positions

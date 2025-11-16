@@ -77,7 +77,7 @@ class ModernSimICU:
         self.show_intro = True
 
         # Nurse render size
-        self.nurse_size = 56
+        self.nurse_size = 64
         self.nurse_speed = 28.0
 
         # Nurse animation state
@@ -585,7 +585,7 @@ class ModernSimICU:
         # Draw animated nurses at current positions (fallback to station)
         for nurse in self.env.game.nurses:
             nx, ny = self.nurse_positions.get(nurse, self.nurse_stations[nurse])
-            self.draw_nurse(nurse, int(nx), int(ny), self.nurse_size)
+            self.draw_nurse(nurse, 830, self.bed_area_y + 0 + i * 56, self.nurse_size)
         
         # Draw UI panel
         self.draw_ui_panel()
