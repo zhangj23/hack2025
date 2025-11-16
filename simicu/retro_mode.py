@@ -672,11 +672,18 @@ class RetroSimICU:
                 pygame.draw.rect(self.screen, DARK_GRAY, (x, y, width, height))
             # Overlay health bar for the patient on this ventilator
             try:
-                from sim_icu_logic import PatientStatus  # local import to avoid circulars at top
+                from sim_icu_logic import PatientStatus, PatientType  # local import to avoid circulars at top
                 patient = next(p for p in self.game.patients if p.assigned_ventilator == vent and p.status == PatientStatus.ON_VENTILATOR)
                 bar_width = int((patient.severity / 100.0) * width)
                 bar_color = GREEN if patient.severity >= 70 else ORANGE if patient.severity >= 40 else RED
                 pygame.draw.rect(self.screen, bar_color, (x, y + height - 10, bar_width, 10))
+                # Type badge in top-right corner
+                t_letter = "R" if patient.patient_type == PatientType.RESPIRATORY else "C" if patient.patient_type == PatientType.CARDIAC else "T"
+                badge = self.small_font.render(t_letter, self.retro_antialias, BLACK)
+                bw, bh = badge.get_size()
+                px, py = x + width - bw - 6, y + 2
+                pygame.draw.rect(self.screen, YELLOW, (px - 2, py - 2, bw + 4, bh + 4))
+                self.screen.blit(badge, (px, py))
             except StopIteration:
                 pass
         # Record for nurse animation targeting
