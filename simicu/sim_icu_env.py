@@ -150,9 +150,11 @@ class SimICUEnv(gym.Env):
 
         # Resource availability checks
         resource_available = True
-        if action_type == 0 and self.game.free_beds == 0:
-            step_penalty -= 2.0
-            resource_available = False
+        if action_type == 0:
+            # Bed requires both a free bed and a free nurse
+            if self.game.free_beds == 0 or self.game.free_nurses == 0:
+                step_penalty -= 2.0
+                resource_available = False
         elif action_type == 1:
             # Vent requires both a free ventilator and a free nurse (attending)
             if self.game.free_vents == 0 or self.game.free_nurses == 0:
@@ -216,9 +218,12 @@ class SimICUEnv(gym.Env):
             elif action_type == 1:  # ventilator
                 reward += 5.0
 
-        # Penalty for idling when there is work to do (waiting patients and free resources)
+        # Penalty for idling when there is work to do (waiting patients and free resources with nurse)
         if action_type == 2:
-            if self.game.total_waiting_patients > 0 and (self.game.free_beds > 0 or self.game.free_vents > 0):
+            if self.game.total_waiting_patients > 0 and (
+                (self.game.free_beds > 0 and self.game.free_nurses > 0) or
+                (self.game.free_vents > 0 and self.game.free_nurses > 0)
+            ):
                 reward -= 0.5
         
         # Check if episode is done
@@ -249,7 +254,13 @@ class SimICUEnv(gym.Env):
 
         # Dense shaping rewards per step (tuned)
         waiting = self.game.total_waiting_patients
-        treated = len([p for p in self.game.patients if p.status in [PatientStatus.IN_BED, PatientStatus.ON_VENTILATOR]])
+        # Count treated patients only when setup is done and a nurse is attending
+        treated = 0
+        for p in self.game.patients:
+            if p.status == PatientStatus.IN_BED and getattr(p, 'bed_setup_ticks', 0) <= 0 and getattr(p, 'assigned_nurse', None) is not None:
+                treated += 1
+            elif p.status == PatientStatus.ON_VENTILATOR and getattr(p, 'vent_setup_ticks', 0) <= 0 and getattr(p, 'assigned_nurse', None) is not None:
+                treated += 1
         pending = len([p for p in self.game.patients if p.status == PatientStatus.PENDING_DISCHARGE])
 
         # Encourage treatment

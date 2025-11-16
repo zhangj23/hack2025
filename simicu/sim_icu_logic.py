@@ -58,15 +58,17 @@ class Patient:
             if self.bed_setup_ticks > 0:
                 self.bed_setup_ticks -= 1
             else:
-                # Effectiveness varies by patient type
-                base = 1.5
-                if self.patient_type == PatientType.RESPIRATORY:
-                    eff = base * 1.0
-                elif self.patient_type == PatientType.CARDIAC:
-                    eff = base * 1.2
-                else:
-                    eff = base * 0.9
-                self.severity = min(100.0, self.severity + eff)
+                # Heal only if a nurse is attending the bed
+                if self.assigned_nurse is not None:
+                    # Effectiveness varies by patient type
+                    base = 1.5
+                    if self.patient_type == PatientType.RESPIRATORY:
+                        eff = base * 1.0
+                    elif self.patient_type == PatientType.CARDIAC:
+                        eff = base * 1.2
+                    else:
+                        eff = base * 0.9
+                    self.severity = min(100.0, self.severity + eff)
             
         elif self.status == PatientStatus.ON_VENTILATOR:
             # Gain life faster with ventilator
@@ -308,6 +310,11 @@ class SimICU:
         nurse = self.get_available_nurse()
 
         if ventilator and nurse:
+            # If upgrading from bed to ventilator, release the bed first (parity with UI)
+            if patient.assigned_bed is not None:
+                patient.assigned_bed.available = True
+                patient.assigned_bed = None
+                self._free_beds += 1
             patient.assigned_ventilator = ventilator
             patient.assigned_nurse = nurse
             ventilator.available = False
