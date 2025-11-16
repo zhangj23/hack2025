@@ -73,15 +73,16 @@ class Patient:
             if self.vent_setup_ticks > 0:
                 self.vent_setup_ticks -= 1
             else:
-                # Ventilator most effective for respiratory patients
-                base = 3.0
-                if self.patient_type == PatientType.RESPIRATORY:
-                    eff = base * 1.5
-                elif self.patient_type == PatientType.CARDIAC:
-                    eff = base * 0.6
-                else:
-                    eff = base * 1.0
-                self.severity = min(100.0, self.severity + eff)
+                # Only heal on ventilator if a nurse is attending
+                if self.assigned_nurse is not None:
+                    base = 3.0
+                    if self.patient_type == PatientType.RESPIRATORY:
+                        eff = base * 1.5
+                    elif self.patient_type == PatientType.CARDIAC:
+                        eff = base * 0.6
+                    else:
+                        eff = base * 1.0
+                    self.severity = min(100.0, self.severity + eff)
         
         # Check for state transitions
         if self.severity >= 100.0 and self.status not in [PatientStatus.CURED, PatientStatus.PENDING_DISCHARGE]:
@@ -128,7 +129,7 @@ class Ventilator:
 class SimICU:
     """Core ICU simulation engine"""
     
-    def __init__(self, num_nurses: int = 6, num_beds: int = 10, num_ventilators: int = 4, max_patients_on_arrival=3, arrival_rate=0.10, num_step_down_beds: int = 20):
+    def __init__(self, num_nurses: int = 6, num_beds: int = 10, num_ventilators: int = 3, max_patients_on_arrival=3, arrival_rate=0.10, num_step_down_beds: int = 20):
         self.num_nurses = num_nurses
         self.num_beds = num_beds
         self.num_ventilators = num_ventilators
@@ -284,29 +285,32 @@ class SimICU:
         return True
     
     def assign_patient_to_ventilator(self, patient: Patient) -> bool:
-        """Assign a patient to a ventilator (requires bed + nurse + ventilator)"""
-        if patient.status != PatientStatus.WAITING and patient.status != PatientStatus.IN_BED:
+        """Assign a patient to a ventilator. Requires an attending nurse; no ICU bed reservation needed."""
+        if patient.status not in [PatientStatus.WAITING, PatientStatus.IN_BED, PatientStatus.PENDING_DISCHARGE]:
             return False
         
         # Check if ventilator is available using counter
         if self._free_vents <= 0:
             return False
         
+        # Need an available nurse to attend the ventilated patient
+        if self._free_nurses <= 0:
+            return False
+
         ventilator = self.get_available_ventilator()
-        
-        if ventilator:
-            # If not already in bed, assign bed and nurse first
-            if patient.status == PatientStatus.WAITING:
-                if not self.assign_patient_to_bed(patient):
-                    return False
-            
+        nurse = self.get_available_nurse()
+
+        if ventilator and nurse:
             patient.assigned_ventilator = ventilator
+            patient.assigned_nurse = nurse
             ventilator.available = False
+            nurse.available = False
             patient.status = PatientStatus.ON_VENTILATOR
             # Setup delay before ventilator effect starts
             patient.vent_setup_ticks = 5
-            # Decrement ventilator counter
+            # Decrement resource counters
             self._free_vents -= 1
+            self._free_nurses -= 1
             return True
         return False
     
