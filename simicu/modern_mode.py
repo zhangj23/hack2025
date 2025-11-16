@@ -74,6 +74,7 @@ class ModernSimICU:
         self.reco_log = []  # list of strings
         self.max_log_lines = 10
         self.show_emr = False
+        self.show_intro = True
 
         # Nurse render size
         self.nurse_size = 56
@@ -484,6 +485,10 @@ class ModernSimICU:
         else:
             self.screen.fill(BLACK)
         
+        # Intro overlay
+        if getattr(self, "show_intro", False):
+            return self.draw_intro_overlay()
+
         # Draw waiting room
         waiting_title = self.font.render("WAITING ROOM", True, WHITE)
         self.screen.blit(waiting_title, (50, 20))
@@ -503,6 +508,8 @@ class ModernSimICU:
             self.draw_patient(patient, 50 + i * 120, self.waiting_room_y + 20, minimal=True)
         
         # Draw bed area (shifted right to match Retro layout)
+        bed_title = self.font.render("ICU BEDS", self.retro_antialias, WHITE)
+        self.screen.blit(bed_title, (200, self.bed_area_y - 30))
         for i, bed in enumerate(self.env.game.beds):
             bed_x = 200 + (i % 4) * 150
             bed_y = self.bed_area_y + 50 + (i // 4) * 120
@@ -518,6 +525,8 @@ class ModernSimICU:
                         self.draw_patient(patient, bed_x + 10, bed_y - 20, 100, 60)
         
         # Draw ventilators (on the left)
+        vent_title = self.font.render("VENTILATORS", self.retro_antialias, WHITE)
+        self.screen.blit(vent_title, (50, self.bed_area_y - 30))
         for i, vent in enumerate(self.env.game.ventilators):
             vent_x = 50
             vent_y = self.bed_area_y + 50 + i * 120
@@ -583,6 +592,37 @@ class ModernSimICU:
         
         pygame.display.flip()
 
+    def draw_intro_overlay(self):
+        self.screen.fill(BLACK)
+        title = self.large_font.render("SIMICU - MODERN MODE", self.retro_antialias, YELLOW)
+        subtitle = self.font.render("AI-CONTROLLED ICU MANAGEMENT", self.retro_antialias, WHITE)
+        self.screen.blit(title, ((self.width - title.get_width()) // 2, 120))
+        self.screen.blit(subtitle, ((self.width - subtitle.get_width()) // 2, 165))
+
+        lines = [
+            "This mode runs the same simulation as Retro,",
+            "but actions are chosen by a trained AI (PPO).",
+            "The visuals, timing, and constraints are identical.",
+            "",
+            "Press PLAY to start."
+        ]
+        y = 220
+        for line in lines:
+            t = self.font.render(line, self.retro_antialias, LIGHT_GRAY)
+            self.screen.blit(t, (100, y))
+            y += 26
+
+        btn_w, btn_h = 220, 56
+        btn_x = (self.width - btn_w) // 2
+        btn_y = y + 30
+        pygame.draw.rect(self.screen, BLUE, (btn_x, btn_y, btn_w, btn_h), border_radius=6)
+        pygame.draw.rect(self.screen, WHITE, (btn_x, btn_y, btn_w, btn_h), 2, border_radius=6)
+        btn_text = self.large_font.render("PLAY", self.retro_antialias, WHITE)
+        self.screen.blit(btn_text, (btn_x + (btn_w - btn_text.get_width()) // 2,
+                                    btn_y + (btn_h - btn_text.get_height()) // 2))
+        self._intro_button = (btn_x, btn_y, btn_w, btn_h)
+        pygame.display.flip()
+
     def _push_reco(self, text: str):
         self.reco_log.append(text)
         if len(self.reco_log) > 200:
@@ -637,11 +677,17 @@ class ModernSimICU:
                     running = False
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_SPACE:
-                        self.paused = not self.paused
+                        if self.show_intro:
+                            self.show_intro = False
+                        else:
+                            self.paused = not self.paused
                     elif event.key == pygame.K_r:
-                        self.obs, self.info = self.env.reset()
-                        self.episode += 1
-                        done = False
+                        if self.show_intro:
+                            self.show_intro = False
+                        else:
+                            self.obs, self.info = self.env.reset()
+                            self.episode += 1
+                            done = False
                     elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
                         self.speed = min(10, self.speed + 1)
                     elif event.key == pygame.K_MINUS:
@@ -650,6 +696,13 @@ class ModernSimICU:
                         running = False
                     elif event.key == pygame.K_e:
                         self.show_emr = not self.show_emr
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 1 and getattr(self, "show_intro", False):
+                        if hasattr(self, "_intro_button"):
+                            bx, by, bw, bh = self._intro_button
+                            mx, my = event.pos
+                            if bx <= mx <= bx + bw and by <= my <= by + bh:
+                                self.show_intro = False
             
             if not self.paused and not done:
                 # Let AI make decisions
