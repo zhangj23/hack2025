@@ -439,6 +439,10 @@ class SimICU:
     @property
     def free_vents(self):
        return self._free_vents
+
+    @property
+    def free_step_down_beds(self):
+       return getattr(self, "_free_step_down_beds", 0)
     
     def is_game_over(self, max_ticks: int = 1000) -> bool:
         """Check if game is over (e.g., time limit reached)"""
