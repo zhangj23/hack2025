@@ -242,12 +242,16 @@ class SimICUEnv(gym.Env):
         # Dense shaping rewards per step (tuned)
         waiting = self.game.total_waiting_patients
         treated = len([p for p in self.game.patients if p.status in [PatientStatus.IN_BED, PatientStatus.ON_VENTILATOR]])
+        pending = len([p for p in self.game.patients if p.status == PatientStatus.PENDING_DISCHARGE])
 
         # Encourage treatment
         reward += 0.5 * treated
 
         # Stronger penalty for patients waiting
         reward -= 0.2 * waiting
+
+        # Mild penalty for ICU gridlock (patients pending discharge blocking beds)
+        reward -= 0.1 * pending
 
         return reward
     

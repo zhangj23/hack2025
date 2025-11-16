@@ -183,28 +183,40 @@ class ModernSimICU:
         severity_text = self.small_font.render(f"{life_value}", True, WHITE)
         self.screen.blit(severity_text, (x + 5, y + 35))
     
-    def draw_bed(self, bed, x, y, width=120, height=100):
-        """Draw a bed icon (uses patient.png when occupied)."""
-        if not bed.available and getattr(self, "patient_in_bed_sprite_raw", None):
-            sw = max(1, int(width * self.patient_in_bed_scale))
-            sh = max(1, int(height * self.patient_in_bed_scale))
-            key = (sw, sh)
-            if key not in self._patient_in_bed_sprite_cache:
-                self._patient_in_bed_sprite_cache[key] = pygame.transform.smoothscale(self.patient_in_bed_sprite_raw, (sw, sh))
-            draw_x = x + (width - sw) // 2
-            draw_y = y + (height - sh) // 2
-            self.screen.blit(self._patient_in_bed_sprite_cache[key], (draw_x, draw_y))
-            pygame.draw.rect(self.screen, RED, (x, y, width, height), 2)
-            return
-
-        # Fallback rectangles for empty bed or when sprite missing
+    def draw_bed(self, bed, x, y, width=120, height=120):
+        """Draw a bed tile and overlay patient info when occupied."""
+        # Base tile
         color = LIGHT_GRAY if bed.available else DARK_GRAY
         pygame.draw.rect(self.screen, color, (x, y, width, height))
-        pygame.draw.rect(self.screen, BLACK, (x, y, width, height), 2)
-        label = "BED" if bed.available else "OCCUPIED"
-        label_text = self.small_font.render(label, True, BLACK if bed.available else WHITE)
-        text_rect = label_text.get_rect(center=(x + width // 2, y + height // 2))
-        self.screen.blit(label_text, text_rect)
+        border = GREEN if bed.available else RED
+        pygame.draw.rect(self.screen, border, (x, y, width, height), 2)
+        # Occupied overlay
+        if not bed.available:
+            if getattr(self, "patient_in_bed_sprite_raw", None):
+                sw = max(1, int(width * self.patient_in_bed_scale))
+                sh = max(1, int(height * self.patient_in_bed_scale))
+                key = (sw, sh)
+                if key not in self._patient_in_bed_sprite_cache:
+                    self._patient_in_bed_sprite_cache[key] = pygame.transform.smoothscale(self.patient_in_bed_sprite_raw, (sw, sh))
+                draw_x = x + (width - sw) // 2
+                draw_y = y + (height - sh) // 2
+                self.screen.blit(self._patient_in_bed_sprite_cache[key], (draw_x, draw_y))
+            # Life bar and identifiers
+            try:
+                patient = next(p for p in self.env.game.patients if p.assigned_bed == bed)
+                bar_width = int((patient.severity / 100.0) * width)
+                bar_color = GREEN if patient.severity >= 70 else ORANGE if patient.severity >= 40 else RED
+                pygame.draw.rect(self.screen, bar_color, (x, y + height - 10, bar_width, 10))
+                id_text = self.small_font.render(f"#{patient.id}", self.retro_antialias, WHITE)
+                self.screen.blit(id_text, (x + 4, y + 4))
+                t_letter = "R" if patient.patient_type == PatientType.RESPIRATORY else "C" if patient.patient_type == PatientType.CARDIAC else "T"
+                badge = self.small_font.render(t_letter, self.retro_antialias, BLACK)
+                bw, bh = badge.get_size()
+                px, py = x + width - bw - 6, y + 2
+                pygame.draw.rect(self.screen, YELLOW, (px - 2, py - 2, bw + 4, bh + 4))
+                self.screen.blit(badge, (px, py))
+            except StopIteration:
+                pass
     
     def draw_nurse(self, nurse, x, y, size=40):
         """Draw a nurse icon"""
@@ -342,12 +354,12 @@ class ModernSimICU:
         for i, patient in enumerate(waiting_patients[:6]):  # Show up to 6
             self.draw_patient(patient, 50 + i * 120, self.waiting_room_y + 20, minimal=True)
         
-        # Draw bed area
-        bed_title = self.font.render("ICU BEDS", True, WHITE)
-        self.screen.blit(bed_title, (50, self.bed_area_y - 30))
+        # Draw bed area (shifted right to match Retro layout)
+        bed_title = self.font.render("ICU BEDS", self.retro_antialias, WHITE)
+        self.screen.blit(bed_title, (200, self.bed_area_y - 30))
         
         for i, bed in enumerate(self.env.game.beds):
-            bed_x = 50 + (i % 4) * 150
+            bed_x = 200 + (i % 4) * 150
             bed_y = self.bed_area_y + 50 + (i // 4) * 120
             self.draw_bed(bed, bed_x, bed_y)
             
@@ -357,12 +369,12 @@ class ModernSimICU:
                     if patient.assigned_bed == bed:
                         self.draw_patient(patient, bed_x + 10, bed_y - 20, 100, 60)
         
-        # Draw ventilators
-        vent_title = self.font.render("VENTILATORS", True, WHITE)
-        self.screen.blit(vent_title, (700, self.bed_area_y - 30))
+        # Draw ventilators (on the left)
+        vent_title = self.font.render("VENTILATORS", self.retro_antialias, WHITE)
+        self.screen.blit(vent_title, (50, self.bed_area_y - 30))
         
         for i, vent in enumerate(self.env.game.ventilators):
-            vent_x = 700
+            vent_x = 50
             vent_y = self.bed_area_y + 50 + i * 80
             self.draw_ventilator(vent, vent_x, vent_y)
             
