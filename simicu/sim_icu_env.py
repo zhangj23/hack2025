@@ -20,7 +20,7 @@ class SimICUEnv(gym.Env):
     
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
     
-    def __init__(self, max_patients: int = 10, max_ticks: int = 300, render_mode=None, arrival_rate: float | None = None):
+    def __init__(self, max_patients: int = 10, max_ticks: int = 300, render_mode=None, arrival_rate: float | None = None, num_nurses: int | None = None, num_beds: int | None = None, num_ventilators: int | None = None):
         super(SimICUEnv, self).__init__()
         
         self.max_patients = max_patients
@@ -28,7 +28,17 @@ class SimICUEnv(gym.Env):
         self.render_mode = render_mode
         
         # Initialize the core simulation engine
-        self.game = SimICU(arrival_rate=arrival_rate if arrival_rate is not None else 0.10)
+        self.game = SimICU(
+            num_nurses=num_nurses if num_nurses is not None else 6,
+            num_beds=num_beds if num_beds is not None else 10,
+            num_ventilators=num_ventilators if num_ventilators is not None else 3,
+            arrival_rate=arrival_rate if arrival_rate is not None else 0.10
+        )
+
+        # Pending assignment parity: simulate travel delay before setup starts
+        self._pending_patient_id: int | None = None
+        self._pending_action_type: int | None = None  # 0=bed,1=vent
+        self._pending_travel_ticks: int = 0
         
         # Define action space
         # Action: [patient_id, action_type]
@@ -133,110 +143,63 @@ class SimICUEnv(gym.Env):
         return initial_state, info
     
     def step(self, action):
-        patient_id, action_type = action
-        
-        # --- 1. VALIDATION & PENALTIES (DO NOT EARLY-RETURN) ---
+        patient_slot_id, action_type = action
+
         step_penalty = 0.0
 
-        valid_patient = None
-        if patient_id < len(self.game.patients):
-            candidate = self.game.patients[patient_id]
-            if candidate.status not in [PatientStatus.CURED, PatientStatus.LOST]:
-                valid_patient = candidate
-            else:
-                step_penalty -= 5.0  # acting on finished patient
+        # 1) Validate action
+        if patient_slot_id >= len(self.game.patients):
+            step_penalty = -5.0
+            patient = None
         else:
-            step_penalty -= 5.0  # acting on non-existent patient
+            patient = self.game.patients[patient_slot_id]
 
-        # Resource availability checks
-        resource_available = True
-        if action_type == 0:
-            # Bed requires both a free bed and a free nurse
+        if patient and patient.status in [PatientStatus.CURED, PatientStatus.LOST, PatientStatus.PENDING_DISCHARGE]:
+            step_penalty = -5.0
+            patient = None
+
+        if patient and action_type == 0:
             if self.game.free_beds == 0 or self.game.free_nurses == 0:
-                step_penalty -= 2.0
-                resource_available = False
-        elif action_type == 1:
-            # Vent requires both a free ventilator and a free nurse (attending)
-            if self.game.free_vents == 0 or self.game.free_nurses == 0:
-                step_penalty -= 2.0
-                resource_available = False
+                step_penalty = -2.0
+                patient = None
+        elif patient and action_type == 1:
+            if self.game.free_vents == 0 or self.game.free_nurses < 2:
+                step_penalty = -2.0
+                patient = None
 
-        # --- 2. APPLY ACTION IF VALID ---
-        action_applied = False
-        if valid_patient and resource_available:
-            actual_patient_id = valid_patient.id
-            action_applied = bool(self.game.perform_action(actual_patient_id, action_type))
-        else:
-            # Soft action masking: remap invalid action to best valid one
-            waiting_patients = [p for p in self.game.patients if p.status == PatientStatus.WAITING]
-            waiting_patients.sort(key=lambda p: p.severity, reverse=True)
-            if action_type == 1:
-                if self.game.free_vents > 0 and self.game.free_nurses > 0 and waiting_patients:
-                    # Try ventilator for the most critical waiting patient
-                    target = waiting_patients[0]
-                    action_applied = bool(self.game.perform_action(target.id, 1))
-                    if action_applied:
-                        step_penalty = min(step_penalty, 0.0)
-                elif self.game.free_beds > 0 and self.game.free_nurses > 0 and waiting_patients:
-                    # Fallback to bed if vents/nurses unavailable
-                    target = waiting_patients[0]
-                    action_applied = bool(self.game.perform_action(target.id, 0))
-                    if action_applied:
-                        step_penalty = min(step_penalty, 0.0)
-            elif action_type == 0 and self.game.free_beds > 0 and self.game.free_nurses > 0 and waiting_patients:
-                # Try bed for the most critical waiting patient
-                target = waiting_patients[0]
-                action_applied = bool(self.game.perform_action(target.id, 0))
-                if action_applied:
-                    step_penalty = min(step_penalty, 0.0)
+        # Severity before
+        prev_total_severity = sum(p.severity for p in self.game.patients if p.status not in [PatientStatus.CURED, PatientStatus.LOST])
 
-        # Track severity before update (for shaping reward)
-        prev_total_severity = sum(p.severity for p in self.game.patients)
+        # 2) Apply immediately
+        if patient and action_type != 2:
+            self.game.perform_action(patient.id, action_type)
 
-        # Always advance time so the sim progresses even after invalid actions
+        # 3) Advance game
         self.game.update_tick()
-        
-        # Get new state (which is now normalized)
+
+        # 4) New state and reward
         new_state = self._get_state()
-        
-        # Calculate shaping reward
+        new_total_severity = sum(p.severity for p in self.game.patients if p.status not in [PatientStatus.CURED, PatientStatus.LOST])
+
         reward = self._calculate_reward() + step_penalty
+        delta_severity = new_total_severity - prev_total_severity
+        reward += 0.1 * delta_severity
 
-        # Reward reduction in total severity across all patients
-        new_total_severity = sum(p.severity for p in self.game.patients)
-        delta_severity = prev_total_severity - new_total_severity
-        reward += 0.5 * delta_severity  # positive if severity decreased
-
-        # Small penalty when treatment setup delay is incurred (switching/upgrading introduces lag)
         if self.game.just_incurred_setup_delay:
-            reward -= 0.5
+            reward -= 5.0
 
-        # Bonus for successful resource assignments (encourage acting)
-        if action_applied:
-            if action_type == 0:  # bed
-                reward += 2.0
-            elif action_type == 1:  # ventilator
-                reward += 5.0
-
-        # Penalty for idling when there is work to do (waiting patients and free resources with nurse)
         if action_type == 2:
-            if self.game.total_waiting_patients > 0 and (
-                (self.game.free_beds > 0 and self.game.free_nurses > 0) or
-                (self.game.free_vents > 0 and self.game.free_nurses > 0)
-            ):
+            if self.game.total_waiting_patients > 0 and self.game.free_nurses > 0:
                 reward -= 0.5
-        
-        # Check if episode is done
+
         terminated = self.game.is_game_over(self.max_ticks)
         truncated = False
-        
-        # Info dict
         info = {
             'patients_saved': self.game.patients_saved,
             'patients_lost': self.game.patients_lost,
             'score': self.game.get_score()
         }
-        
+
         return new_state, reward, terminated, truncated, info
     
     def _calculate_reward(self) -> float:
@@ -256,21 +219,42 @@ class SimICUEnv(gym.Env):
         waiting = self.game.total_waiting_patients
         # Count treated patients only when setup is done and a nurse is attending
         treated = 0
+        waiting_patients = []
         for p in self.game.patients:
             if p.status == PatientStatus.IN_BED and getattr(p, 'bed_setup_ticks', 0) <= 0 and getattr(p, 'assigned_nurse', None) is not None:
                 treated += 1
             elif p.status == PatientStatus.ON_VENTILATOR and getattr(p, 'vent_setup_ticks', 0) <= 0 and getattr(p, 'assigned_nurse', None) is not None:
                 treated += 1
+            elif p.status == PatientStatus.WAITING:
+                waiting_patients.append(p)
         pending = len([p for p in self.game.patients if p.status == PatientStatus.PENDING_DISCHARGE])
 
         # Encourage treatment
         reward += 0.8 * treated
 
-        # Stronger penalty for patients waiting
+        # Stronger penalty for patients waiting: count and aggregate severity
         reward -= 0.15 * waiting
+        sum_waiting_severity = sum(p.severity for p in waiting_patients)
+        reward -= 0.01 * sum_waiting_severity
 
-        # Mild penalty for ICU gridlock (patients pending discharge blocking beds)
+        # ICU gridlock penalties (non-linear)
         reward -= 0.1 * pending
+        reward -= 0.05 * (pending * pending)
+
+        # Archetype-aware treatment shaping
+        for p in self.game.patients:
+            if p.status == PatientStatus.ON_VENTILATOR and getattr(p, 'vent_setup_ticks', 0) <= 0 and getattr(p, 'assigned_nurse', None) is not None:
+                if getattr(p, 'patient_type', None) == PatientType.RESPIRATORY:
+                    reward += 0.3
+                else:
+                    reward -= 0.3
+            if p.status == PatientStatus.IN_BED and getattr(p, 'bed_setup_ticks', 0) <= 0 and getattr(p, 'assigned_nurse', None) is not None:
+                if getattr(p, 'patient_type', None) == PatientType.CARDIAC:
+                    reward += 0.2
+
+        # Opportunity cost: nurses bound to ongoing treatments reduce flexibility
+        nurses_in_use = self.game.num_nurses - self.game.free_nurses
+        reward -= 0.2 * nurses_in_use
 
         return reward
     

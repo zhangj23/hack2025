@@ -36,6 +36,7 @@ class Patient:
         self.status = PatientStatus.WAITING
         self.time_waiting = 0
         self.assigned_nurse = None
+        self.assigned_nurse2 = None
         self.assigned_bed = None
         self.assigned_ventilator = None
         # Setup times: when (re)assigned, treatment is delayed during setup
@@ -48,42 +49,54 @@ class Patient:
         """Update patient state each tick"""
         if self.status == PatientStatus.WAITING:
             self.time_waiting += 1
-            # Lose life while waiting (slow deterioration)
-            # Slight acceleration with longer wait
+            # Type-dependent deterioration (ticking time bomb behavior)
+            base_decline = 0.5
+            rate = 1.0
+            if self.patient_type == PatientType.TRAUMA:
+                rate = 3.0  # Trauma declines much faster
+            elif self.patient_type == PatientType.CARDIAC:
+                rate = 2.5 if self.severity < 30 else 0.5
+            elif self.patient_type == PatientType.RESPIRATORY:
+                rate = 1.0
             extra = (self.time_waiting // 20) * 0.1
-            self.severity = max(0.0, self.severity - (0.5 + extra))
+            self.severity = max(0.0, self.severity - ((base_decline * rate) + extra))
             
         elif self.status == PatientStatus.IN_BED:
             # Gain life with bed + nurse care (slower, steady)
             if self.bed_setup_ticks > 0:
                 self.bed_setup_ticks -= 1
+                # Deteriorate during setup (moving/unplugged)
+                self.severity = max(0.0, self.severity - 0.5)
             else:
                 # Heal only if a nurse is attending the bed
                 if self.assigned_nurse is not None:
-                    # Effectiveness varies by patient type
-                    base = 1.5
+                    # Exaggerated, archetype-aware bed effects
+                    base = 2.0
                     if self.patient_type == PatientType.RESPIRATORY:
-                        eff = base * 1.0
+                        eff = base * 0.25   # +0.5, beds are poor for respiratory
                     elif self.patient_type == PatientType.CARDIAC:
-                        eff = base * 1.2
-                    else:
-                        eff = base * 0.9
+                        eff = base * 1.5    # +3.0, beds are primary for cardiac
+                    else:  # TRAUMA or other
+                        eff = base * 1.0    # +2.0, beds are solid for general/trauma
                     self.severity = min(100.0, self.severity + eff)
             
         elif self.status == PatientStatus.ON_VENTILATOR:
             # Gain life faster with ventilator
             if self.vent_setup_ticks > 0:
                 self.vent_setup_ticks -= 1
+                # Deteriorate during setup (vent setup is harder)
+                self.severity = max(0.0, self.severity - 1.0)
             else:
                 # Only heal on ventilator if a nurse is attending
                 if self.assigned_nurse is not None:
-                    base = 3.0
+                    # Exaggerated, archetype-aware vent effects
+                    base = 4.0
                     if self.patient_type == PatientType.RESPIRATORY:
-                        eff = base * 1.5
+                        eff = base * 1.5    # +6.0, vents are critical here
                     elif self.patient_type == PatientType.CARDIAC:
-                        eff = base * 0.6
-                    else:
-                        eff = base * 1.0
+                        eff = base * 0.1    # +0.4, vents are wasteful here
+                    else:  # TRAUMA or other
+                        eff = base * 0.75   # +3.0, decent but not as vital
                     self.severity = min(100.0, self.severity + eff)
         
         # Check for state transitions
@@ -99,6 +112,10 @@ class Patient:
         if self.assigned_nurse:
             self.assigned_nurse.available = True
             self.assigned_nurse = None
+        # Release second nurse if present (used for ventilator patients)
+        if hasattr(self, 'assigned_nurse2') and self.assigned_nurse2:
+            self.assigned_nurse2.available = True
+            self.assigned_nurse2 = None
         if self.assigned_bed:
             self.assigned_bed.available = True
             self.assigned_bed = None
@@ -131,7 +148,7 @@ class Ventilator:
 class SimICU:
     """Core ICU simulation engine"""
     
-    def __init__(self, num_nurses: int = 6, num_beds: int = 10, num_ventilators: int = 3, max_patients_on_arrival=3, arrival_rate=0.10, num_step_down_beds: int = 20):
+    def __init__(self, num_nurses: int = 6, num_beds: int = 10, num_ventilators: int = 3, max_patients_on_arrival=3, arrival_rate=0.10, num_step_down_beds: int = 8):
         self.num_nurses = num_nurses
         self.num_beds = num_beds
         self.num_ventilators = num_ventilators
@@ -302,8 +319,8 @@ class SimICU:
         if self._free_vents <= 0:
             return False
         
-        # Need an available nurse to attend the ventilated patient
-        if self._free_nurses <= 0:
+        # Need TWO available nurses to attend the ventilated patient
+        if self._free_nurses < 2:
             return False
 
         ventilator = self.get_available_ventilator()
@@ -319,12 +336,24 @@ class SimICU:
             patient.assigned_nurse = nurse
             ventilator.available = False
             nurse.available = False
+            # Mark a second nurse as busy (not stored on patient, but consumed)
+            second_nurse = self.get_available_nurse()
+            if second_nurse is None:
+                # Roll back if second nurse not found (shouldn't happen due to counter check)
+                nurse.available = True
+                patient.assigned_ventilator = None
+                patient.assigned_nurse = None
+                ventilator.available = True
+                return False
+            second_nurse.available = False
+            # Track second nurse so we can release availability later
+            self.patients[self.patients.index(patient)].assigned_nurse2 = second_nurse
             patient.status = PatientStatus.ON_VENTILATOR
             # Setup delay before ventilator effect starts
             patient.vent_setup_ticks = 5
-            # Decrement resource counters
+            # Decrement resource counters (two nurses)
             self._free_vents -= 1
-            self._free_nurses -= 1
+            self._free_nurses -= 2
             return True
         return False
 
@@ -337,7 +366,7 @@ class SimICU:
             return False
         if ventilator is None or not ventilator.available:
             return False
-        if self._free_vents <= 0 or self._free_nurses <= 0:
+        if self._free_vents <= 0 or self._free_nurses < 2:
             return False
 
         chosen_nurse = nurse if nurse is not None else self.get_available_nurse()
@@ -357,10 +386,21 @@ class SimICU:
         patient.assigned_nurse = chosen_nurse
         ventilator.available = False
         chosen_nurse.available = False
+        # Consume a second nurse
+        second_nurse = self.get_available_nurse()
+        if second_nurse is None:
+            # Roll back
+            chosen_nurse.available = True
+            patient.assigned_nurse = None
+            patient.assigned_ventilator = None
+            ventilator.available = True
+            return False
+        second_nurse.available = False
+        patient.assigned_nurse2 = second_nurse
         patient.status = PatientStatus.ON_VENTILATOR
         patient.vent_setup_ticks = 5
         self._free_vents -= 1
-        self._free_nurses -= 1
+        self._free_nurses -= 2
         return True
     
     def perform_action(self, patient_id: int, action_type: int):
@@ -447,8 +487,9 @@ class SimICU:
         for patient in self.patients:
             if patient.status == PatientStatus.PENDING_DISCHARGE and self._free_step_down_beds > 0:
                 self._free_step_down_beds -= 1
-                # Occupy step-down for 10 ticks
-                self._step_down_occupancies.append(10)
+                # Occupy step-down for a long, variable time
+                occupancy_time = random.randint(20, 40)
+                self._step_down_occupancies.append(occupancy_time)
                 # Free ICU resources now
                 had_bed = patient.assigned_bed is not None
                 had_nurse = patient.assigned_nurse is not None
@@ -456,7 +497,6 @@ class SimICU:
                 patient._release_resources()
                 self._release_patient_resources_counters(had_bed, had_nurse, had_vent)
                 patient.status = PatientStatus.CURED
-                # Count as saved here (promotion from pending discharge)
                 self.patients_saved += 1
                 self.just_saved_a_patient = True
         
@@ -469,10 +509,14 @@ class SimICU:
         # and setting their available flags. We just need to update the counters here.
         if had_bed:
             self._free_beds += 1
-        if had_nurse:
-            self._free_nurses += 1
         if had_vent:
             self._free_vents += 1
+        if had_nurse:
+            # Vent patients consumed two nurses; bed patients consume one
+            if had_vent:
+                self._free_nurses += 2
+            else:
+                self._free_nurses += 1
     
     def get_waiting_patients(self) -> List[Patient]:
         """Get list of patients currently waiting"""
