@@ -23,7 +23,10 @@ class Patient:
     
     def __init__(self, patient_id: int, initial_severity: int = 50):
         self.id = patient_id
-        self.severity = initial_severity  # 0-100, where 0 is healthy, 100 is critical
+        # Interpret 'severity' as LIFE from 0..100 where:
+        #   0  = death, 100 = full recovery.
+        # Patients lose life while waiting and gain life when treated.
+        self.severity = float(initial_severity)
         self.status = PatientStatus.WAITING
         self.time_waiting = 0
         self.assigned_nurse = None
@@ -37,30 +40,30 @@ class Patient:
         """Update patient state each tick"""
         if self.status == PatientStatus.WAITING:
             self.time_waiting += 1
-            # Severity increases while waiting (patient getting worse)
-            # Accelerating deterioration: every 10 ticks of waiting adds +1 extra
-            extra = self.time_waiting // 10
-            self.severity = min(100, self.severity + 1 + extra)
+            # Lose life while waiting (slow deterioration)
+            # Slight acceleration with longer wait
+            extra = (self.time_waiting // 20) * 0.1
+            self.severity = max(0.0, self.severity - (0.5 + extra))
             
         elif self.status == PatientStatus.IN_BED:
-            # Severity decreases with bed + nurse care (tuned faster)
+            # Gain life with bed + nurse care (slower, steady)
             if self.bed_setup_ticks > 0:
                 self.bed_setup_ticks -= 1
             else:
-                self.severity = max(0, self.severity - 3)
+                self.severity = min(100.0, self.severity + 1.5)
             
         elif self.status == PatientStatus.ON_VENTILATOR:
-            # Severity decreases faster with ventilator (tuned much faster)
+            # Gain life faster with ventilator
             if self.vent_setup_ticks > 0:
                 self.vent_setup_ticks -= 1
             else:
-                self.severity = max(0, self.severity - 8)
+                self.severity = min(100.0, self.severity + 3.0)
         
         # Check for state transitions
-        if self.severity <= 0 and self.status != PatientStatus.CURED:
+        if self.severity >= 100.0 and self.status != PatientStatus.CURED:
             self.status = PatientStatus.CURED
             self._release_resources()
-        elif self.severity >= 100 and self.status != PatientStatus.LOST:
+        elif self.severity <= 0.0 and self.status != PatientStatus.LOST:
             self.status = PatientStatus.LOST
             self._release_resources()
     
@@ -221,6 +224,35 @@ class SimICU:
             self._free_nurses -= 1
             return True
         return False
+    
+    def assign_patient_to_specific_bed(self, patient: Patient, bed: Bed, nurse: Optional[Nurse] = None) -> bool:
+        """
+        Assign the given patient to a specific bed (and nurse).
+        This is used by the UI when the player clicks a particular bed.
+        """
+        if patient.status != PatientStatus.WAITING:
+            return False
+        if bed is None or not bed.available:
+            return False
+        if self._free_beds <= 0 or self._free_nurses <= 0:
+            return False
+
+        # Choose a nurse if not explicitly provided
+        chosen_nurse = nurse if nurse is not None else self.get_available_nurse()
+        if chosen_nurse is None or not chosen_nurse.available:
+            return False
+
+        # Perform assignment
+        patient.assigned_bed = bed
+        patient.assigned_nurse = chosen_nurse
+        bed.available = False
+        chosen_nurse.available = False
+        patient.status = PatientStatus.IN_BED
+        patient.bed_setup_ticks = 3
+        # Decrement counters
+        self._free_beds -= 1
+        self._free_nurses -= 1
+        return True
     
     def assign_patient_to_ventilator(self, patient: Patient) -> bool:
         """Assign a patient to a ventilator (requires bed + nurse + ventilator)"""

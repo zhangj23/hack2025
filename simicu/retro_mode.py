@@ -43,6 +43,10 @@ class RetroSimICU:
         self.game = SimICU()
         self.selected_patient = None
         self.tick_speed = 1  # Ticks per frame
+        self.fps = 10         # Target frames per second (lower = slower game)
+        # Tick pacing: update simulation once every N frames (keep FPS constant)
+        self.update_every_n_frames = 2  # higher -> slower simulation
+        self._frame_counter = 0
         self.paused = False
 
         # Sprites
@@ -61,6 +65,27 @@ class RetroSimICU:
             self.nurse_sprite_raw = None
         self._nurse_sprite_cache = {}
 
+        # Patient sprite (standing)
+        standing_path = os.path.join(base_dir, "sprites", "standing.png")
+        try:
+            self.patient_sprite_raw = pygame.image.load(standing_path).convert_alpha()
+        except Exception:
+            self.patient_sprite_raw = None
+        self._patient_sprite_cache = {}
+
+        # Patient-in-bed sprite (bed occupied visual)
+        bed_patient_path = os.path.join(base_dir, "sprites", "patient.png")
+        try:
+            self.patient_in_bed_sprite_raw = pygame.image.load(bed_patient_path).convert_alpha()
+        except Exception:
+            self.patient_in_bed_sprite_raw = None
+        self._patient_in_bed_sprite_cache = {}
+        # Scale factor to draw patient-in-bed a bit larger than the bed tile
+        self.patient_in_bed_scale = 1.2
+        # Scale for standing sprite in waiting room
+        self.waiting_sprite_scale_w = 1.3
+        self.waiting_sprite_scale_h = 1.6
+
         # Object position maps for animation targets
         self.bed_positions = {}   # bed -> (x, y, w, h)
         self.vent_positions = {}  # vent -> (x, y, w, h)
@@ -68,7 +93,7 @@ class RetroSimICU:
         # Nurse movement state
         self.nurse_positions = {}  # nurse -> (x, y)
         self.nurse_stations = {}   # nurse -> (x, y)
-        self.nurse_speed = 30      # pixels per tick
+        self.nurse_speed = 60      # pixels per tick
         self.nurse_size = 48       # draw size (bigger nurse)
         self.nurse_paths = {}      # nurse -> [(x, y), ...] waypoints
         self.pending_assignments = []  # [{'nurse': Nurse, 'patient': Patient, 'bed': Bed}]
@@ -82,21 +107,63 @@ class RetroSimICU:
         self.ui_panel_x = 900
         self.ui_panel_width = 300
     
-    def draw_patient(self, patient, x, y, width=100, height=80):
-        """Draw a patient icon"""
-        # Patient body (rectangle)
-        color = RED if patient.status == PatientStatus.WAITING else GREEN
-        if patient.status == PatientStatus.ON_VENTILATOR:
-            color = BLUE
-        elif patient.status in [PatientStatus.CURED, PatientStatus.LOST]:
-            color = GRAY
-        
-        pygame.draw.rect(self.screen, color, (x, y, width, height))
-        pygame.draw.rect(self.screen, BLACK, (x, y, width, height), 2)
+    def draw_patient(self, patient, x, y, width=100, height=80, minimal=False):
+        """Draw a patient.
+        minimal=True renders only the life bar (used for waiting room).
+        """
+        if minimal:
+            # Waiting room: show standing sprite (if available) + life bar + number only.
+            if self.patient_sprite_raw:
+                # Scale bigger for visibility in waiting room
+                tw = max(1, int(width * self.waiting_sprite_scale_w))
+                th = max(1, int(height * self.waiting_sprite_scale_h))
+                key = (tw, th, "waiting")
+                if key not in self._patient_sprite_cache:
+                    self._patient_sprite_cache[key] = pygame.transform.smoothscale(self.patient_sprite_raw, (tw, th))
+                sprite = self._patient_sprite_cache[key]
+                draw_x = x + (width - tw) // 2
+                draw_y = y + (height - th) // 2
+                self.screen.blit(sprite, (draw_x, draw_y))
+            # Life bar and value
+            bar_width = int((patient.severity / 100.0) * width)
+            bar_color = GREEN if patient.severity >= 70 else ORANGE if patient.severity >= 40 else RED
+            pygame.draw.rect(self.screen, bar_color, (x, y + height - 10, bar_width, 10))
+            life_value = int(round(patient.severity))
+            value_text = self.small_font.render(f"{life_value}", True, WHITE)
+            self.screen.blit(value_text, (x + 5, y + 5))
+            return
+        # If we have a sprite, draw it scaled; otherwise fallback to colored box
+        drew_sprite = False
+        if self.patient_sprite_raw:
+            key = (width, height)
+            if key not in self._patient_sprite_cache:
+                # Keep aspect ratio while fitting inside the target rect
+                src_w, src_h = self.patient_sprite_raw.get_size()
+                scale = min(width / src_w, height / src_h)
+                scaled = (max(1, int(src_w * scale)), max(1, int(src_h * scale)))
+                self._patient_sprite_cache[key] = pygame.transform.smoothscale(self.patient_sprite_raw, scaled)
+            sprite = self._patient_sprite_cache[key]
+            # center inside the box area
+            draw_x = x + (width - sprite.get_width()) // 2
+            draw_y = y + (height - sprite.get_height()) // 2
+            self.screen.blit(sprite, (draw_x, draw_y))
+            # outline the box for selection clarity
+            pygame.draw.rect(self.screen, BLACK, (x, y, width, height), 2)
+            drew_sprite = True
+        if not drew_sprite:
+            # Patient body (rectangle)
+            color = RED if patient.status == PatientStatus.WAITING else GREEN
+            if patient.status == PatientStatus.ON_VENTILATOR:
+                color = BLUE
+            elif patient.status in [PatientStatus.CURED, PatientStatus.LOST]:
+                color = GRAY
+            pygame.draw.rect(self.screen, color, (x, y, width, height))
+            pygame.draw.rect(self.screen, BLACK, (x, y, width, height), 2)
         
         # Severity bar
         bar_width = int((patient.severity / 100.0) * width)
-        bar_color = RED if patient.severity > 70 else ORANGE if patient.severity > 40 else YELLOW
+        # Life bar: green when high life, orange mid, red low
+        bar_color = GREEN if patient.severity >= 70 else ORANGE if patient.severity >= 40 else RED
         pygame.draw.rect(self.screen, bar_color, (x, y + height - 10, bar_width, 10))
         
         # Patient ID
@@ -107,8 +174,9 @@ class RetroSimICU:
         status_text = self.small_font.render(patient.status.value, True, WHITE)
         self.screen.blit(status_text, (x + 5, y + 20))
         
-        # Severity number
-        severity_text = self.small_font.render(f"{patient.severity}", True, WHITE)
+        # Severity number (rounded to whole number)
+        life_value = int(round(patient.severity))
+        severity_text = self.small_font.render(f"{life_value}", True, WHITE)
         self.screen.blit(severity_text, (x + 5, y + 35))
         
         # Highlight if selected
@@ -120,15 +188,35 @@ class RetroSimICU:
         # Record for nurse animation targeting
         self.bed_positions[bed] = (x, y, width, height)
         # Try to draw sprite; fallback to rectangle if missing
-        if self.bed_sprite_raw:
-            key = (width, height)
-            if key not in self._bed_sprite_cache:
-                self._bed_sprite_cache[key] = pygame.transform.smoothscale(self.bed_sprite_raw, (width, height))
-            sprite = self._bed_sprite_cache[key]
-            self.screen.blit(sprite, (x, y))
-            # Overlay availability tint/outline
-            border_color = GREEN if bed.available else RED
-            pygame.draw.rect(self.screen, border_color, (x, y, width, height), 2)
+        if self.bed_sprite_raw or self.patient_in_bed_sprite_raw:
+            if bed.available:
+                # draw empty bed
+                if self.bed_sprite_raw:
+                    key = (width, height)
+                    if key not in self._bed_sprite_cache:
+                        self._bed_sprite_cache[key] = pygame.transform.smoothscale(self.bed_sprite_raw, (width, height))
+                    sprite = self._bed_sprite_cache[key]
+                    self.screen.blit(sprite, (x, y))
+                else:
+                    pygame.draw.rect(self.screen, LIGHT_GRAY, (x, y, width, height))
+                pygame.draw.rect(self.screen, GREEN, (x, y, width, height), 2)
+            else:
+                # occupied bed -> draw patient-in-bed sprite if available
+                if self.patient_in_bed_sprite_raw:
+                    # Scale a bit larger than bed and center
+                    sw = max(1, int(width * self.patient_in_bed_scale))
+                    sh = max(1, int(height * self.patient_in_bed_scale))
+                    key2 = (sw, sh)
+                    if key2 not in self._patient_in_bed_sprite_cache:
+                        self._patient_in_bed_sprite_cache[key2] = pygame.transform.smoothscale(self.patient_in_bed_sprite_raw, (sw, sh))
+                    occ_sprite = self._patient_in_bed_sprite_cache[key2]
+                    draw_x = x + (width - sw) // 2
+                    draw_y = y + (height - sh) // 2
+                    self.screen.blit(occ_sprite, (draw_x, draw_y))
+                else:
+                    # fallback rectangle for occupied
+                    pygame.draw.rect(self.screen, DARK_GRAY, (x, y, width, height))
+                pygame.draw.rect(self.screen, RED, (x, y, width, height), 2)
         else:
             if bed.available:
                 color = LIGHT_GRAY
@@ -267,10 +355,27 @@ class RetroSimICU:
                 if bed in self.bed_positions and nurse in self.nurse_positions:
                     bx, by, bw, bh = self.bed_positions[bed]
                     nx, ny = self.nurse_positions[nurse]
-                    # Simple proximity check
-                    if (bx - 4) <= nx <= (bx + bw + 4) and (by - 4) <= ny <= (by + bh + 4):
-                        # Try to assign now
-                        self.game.assign_patient_to_bed(patient)
+                    # Simple proximity check using both rectangle containment and target corner distance
+                    reached_rect = (bx - 4) <= nx <= (bx + bw + 4) and (by - 4) <= ny <= (by + bh + 4)
+                    # Target point near top-right corner used by _get_nurse_target
+                    target_x = bx + bw - size
+                    target_y = by
+                    dx_t = nx - target_x
+                    dy_t = ny - target_y
+                    reached_target = (dx_t * dx_t + dy_t * dy_t) ** 0.5 <= 8
+                    if reached_rect or reached_target:
+                        # Assign this patient to the specific clicked bed with this nurse
+                        # so we don't accidentally pick some other available bed.
+                        # Use the engine's explicit assignment to keep counters correct.
+                        try:
+                            # Assign using explicit API if available
+                            if hasattr(self.game, "assign_patient_to_specific_bed"):
+                                self.game.assign_patient_to_specific_bed(patient, bed, nurse)
+                            else:
+                                # Fallback to generic assignment (may pick first free bed)
+                                self.game.assign_patient_to_bed(patient)
+                        except Exception:
+                            self.game.assign_patient_to_bed(patient)
                         continue  # done with this task
                 remaining.append(task)
             self.pending_assignments = remaining
@@ -320,6 +425,14 @@ class RetroSimICU:
         self.screen.blit(tick_text, (panel_x + 20, y_offset))
         y_offset += 40
         
+        # Speed/FPS display
+        speed_text = self.font.render(f"FPS: {self.fps}", True, WHITE)
+        self.screen.blit(speed_text, (panel_x + 20, y_offset))
+        y_offset += 30
+        rate_text = self.small_font.render(f"Tick every {self.update_every_n_frames} frame(s)", True, WHITE)
+        self.screen.blit(rate_text, (panel_x + 20, y_offset))
+        y_offset += 25
+        
         # Resources
         resources_title = self.font.render("Resources:", True, WHITE)
         self.screen.blit(resources_title, (panel_x + 20, y_offset))
@@ -343,6 +456,8 @@ class RetroSimICU:
             "1. Click patient to select",
             "2. Click bed to assign",
             "3. Click vent for critical",
+            "+/-: Speed up/down",
+            "[ / ]: Slow/Fast ticks",
             "SPACE: Pause/Resume",
             "R: Reset game"
         ]
@@ -438,7 +553,8 @@ class RetroSimICU:
         # Draw waiting patients
         waiting_patients = self.game.get_waiting_patients()
         for i, patient in enumerate(waiting_patients[:6]):  # Show up to 6
-            self.draw_patient(patient, 50 + i * 120, self.waiting_room_y + 20)
+            # In waiting room show only health bar (no box/id/status)
+            self.draw_patient(patient, 50 + i * 120, self.waiting_room_y + 20, minimal=True)
         
         # Draw bed area
         bed_title = self.font.render("ICU BEDS", True, WHITE)
@@ -450,9 +566,12 @@ class RetroSimICU:
             self.draw_bed(bed, bed_x, bed_y)
             
             # Draw patient in bed if occupied
-            for patient in self.game.patients:
-                if patient.assigned_bed == bed:
-                    self.draw_patient(patient, bed_x + 10, bed_y - 20, 100, 60)
+            # If we have a patient-in-bed sprite, the bed already shows patient;
+            # otherwise, overlay a smaller patient icon.
+            if not getattr(self, "patient_in_bed_sprite_raw", None):
+                for patient in self.game.patients:
+                    if patient.assigned_bed == bed:
+                        self.draw_patient(patient, bed_x + 10, bed_y - 20, 100, 60)
         
         # Draw ventilators
         vent_title = self.font.render("VENTILATORS", True, WHITE)
@@ -505,17 +624,27 @@ class RetroSimICU:
                     elif event.key == pygame.K_r:
                         self.game.reset()
                         self.selected_patient = None
+                    elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
+                        self.fps = min(30, self.fps + 1)
+                    elif event.key == pygame.K_MINUS:
+                        self.fps = max(2, self.fps - 1)
+                    elif event.key == pygame.K_LEFTBRACKET:
+                        self.update_every_n_frames = min(10, self.update_every_n_frames + 1)
+                    elif event.key == pygame.K_RIGHTBRACKET:
+                        self.update_every_n_frames = max(1, self.update_every_n_frames - 1)
             
             if not self.paused:
                 # Update game
-                for _ in range(self.tick_speed):
-                    self.game.update_tick()
+                self._frame_counter = (self._frame_counter + 1) % self.update_every_n_frames
+                if self._frame_counter == 0:
+                    for _ in range(self.tick_speed):
+                        self.game.update_tick()
                 # Decrement human input cooldown
                 if self.input_cooldown_ticks > 0:
                     self.input_cooldown_ticks -= 1
             
             self.draw()
-            self.clock.tick(10)  # 10 FPS for retro feel
+            self.clock.tick(self.fps)  # Lower FPS for slower, retro feel
         
         pygame.quit()
         sys.exit()

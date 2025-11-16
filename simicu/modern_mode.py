@@ -9,6 +9,7 @@ import numpy as np
 from stable_baselines3 import PPO
 from sim_icu_env import SimICUEnv
 from sim_icu_logic import PatientStatus
+import os
 
 
 # Colors (same as retro mode for consistency)
@@ -66,21 +67,77 @@ class ModernSimICU:
         self.bed_area_height = 400
         self.ui_panel_x = 900
         self.ui_panel_width = 300
+
+        # Patient sprite (standing)
+        base_dir = os.path.dirname(__file__)
+        standing_path = os.path.join(base_dir, "sprites", "standing.png")
+        try:
+            self.patient_sprite_raw = pygame.image.load(standing_path).convert_alpha()
+        except Exception:
+            self.patient_sprite_raw = None
+        self._patient_sprite_cache = {}
+
+        # Patient-in-bed sprite (occupied bed visual)
+        bed_patient_path = os.path.join(base_dir, "sprites", "patient.png")
+        try:
+            self.patient_in_bed_sprite_raw = pygame.image.load(bed_patient_path).convert_alpha()
+        except Exception:
+            self.patient_in_bed_sprite_raw = None
+        self._patient_in_bed_sprite_cache = {}
+        self.patient_in_bed_scale = 1.2
+        self.waiting_sprite_scale_w = 1.3
+        self.waiting_sprite_scale_h = 1.6
     
-    def draw_patient(self, patient, x, y, width=100, height=80):
-        """Draw a patient icon"""
-        color = RED if patient.status == PatientStatus.WAITING else GREEN
-        if patient.status == PatientStatus.ON_VENTILATOR:
-            color = BLUE
-        elif patient.status in [PatientStatus.CURED, PatientStatus.LOST]:
-            color = GRAY
-        
-        pygame.draw.rect(self.screen, color, (x, y, width, height))
-        pygame.draw.rect(self.screen, BLACK, (x, y, width, height), 2)
+    def draw_patient(self, patient, x, y, width=100, height=80, minimal=False):
+        """Draw a patient icon (sprite if available).
+        minimal=True renders only the life bar (used for waiting room).
+        """
+        if minimal:
+            # Waiting room: show standing sprite (if available) + life bar + number only.
+            if getattr(self, "patient_sprite_raw", None):
+                tw = max(1, int(width * self.waiting_sprite_scale_w))
+                th = max(1, int(height * self.waiting_sprite_scale_h))
+                key = (tw, th, "waiting")
+                if key not in self._patient_sprite_cache:
+                    self._patient_sprite_cache[key] = pygame.transform.smoothscale(self.patient_sprite_raw, (tw, th))
+                sprite = self._patient_sprite_cache[key]
+                draw_x = x + (width - tw) // 2
+                draw_y = y + (height - th) // 2
+                self.screen.blit(sprite, (draw_x, draw_y))
+            bar_width = int((patient.severity / 100.0) * width)
+            bar_color = GREEN if patient.severity >= 70 else ORANGE if patient.severity >= 40 else RED
+            pygame.draw.rect(self.screen, bar_color, (x, y + height - 10, bar_width, 10))
+            life_value = int(round(patient.severity))
+            value_text = self.small_font.render(f"{life_value}", True, WHITE)
+            self.screen.blit(value_text, (x + 5, y + 5))
+            return
+        drew_sprite = False
+        if getattr(self, "patient_sprite_raw", None):
+            key = (width, height)
+            if key not in self._patient_sprite_cache:
+                src_w, src_h = self.patient_sprite_raw.get_size()
+                scale = min(width / src_w, height / src_h)
+                scaled = (max(1, int(src_w * scale)), max(1, int(src_h * scale)))
+                self._patient_sprite_cache[key] = pygame.transform.smoothscale(self.patient_sprite_raw, scaled)
+            sprite = self._patient_sprite_cache[key]
+            draw_x = x + (width - sprite.get_width()) // 2
+            draw_y = y + (height - sprite.get_height()) // 2
+            self.screen.blit(sprite, (draw_x, draw_y))
+            pygame.draw.rect(self.screen, BLACK, (x, y, width, height), 2)
+            drew_sprite = True
+        if not drew_sprite:
+            color = RED if patient.status == PatientStatus.WAITING else GREEN
+            if patient.status == PatientStatus.ON_VENTILATOR:
+                color = BLUE
+            elif patient.status in [PatientStatus.CURED, PatientStatus.LOST]:
+                color = GRAY
+            pygame.draw.rect(self.screen, color, (x, y, width, height))
+            pygame.draw.rect(self.screen, BLACK, (x, y, width, height), 2)
         
         # Severity bar
         bar_width = int((patient.severity / 100.0) * width)
-        bar_color = RED if patient.severity > 70 else ORANGE if patient.severity > 40 else YELLOW
+        # Life bar: green when high life, orange mid, red low
+        bar_color = GREEN if patient.severity >= 70 else ORANGE if patient.severity >= 40 else RED
         pygame.draw.rect(self.screen, bar_color, (x, y + height - 10, bar_width, 10))
         
         # Patient ID
@@ -91,20 +148,29 @@ class ModernSimICU:
         status_text = self.small_font.render(patient.status.value, True, WHITE)
         self.screen.blit(status_text, (x + 5, y + 20))
         
-        # Severity number
-        severity_text = self.small_font.render(f"{patient.severity}", True, WHITE)
+        # Severity number (rounded to whole number)
+        life_value = int(round(patient.severity))
+        severity_text = self.small_font.render(f"{life_value}", True, WHITE)
         self.screen.blit(severity_text, (x + 5, y + 35))
     
     def draw_bed(self, bed, x, y, width=120, height=100):
-        """Draw a bed icon"""
-        if bed.available:
-            color = LIGHT_GRAY
-        else:
-            color = DARK_GRAY
-        
+        """Draw a bed icon (uses patient.png when occupied)."""
+        if not bed.available and getattr(self, "patient_in_bed_sprite_raw", None):
+            sw = max(1, int(width * self.patient_in_bed_scale))
+            sh = max(1, int(height * self.patient_in_bed_scale))
+            key = (sw, sh)
+            if key not in self._patient_in_bed_sprite_cache:
+                self._patient_in_bed_sprite_cache[key] = pygame.transform.smoothscale(self.patient_in_bed_sprite_raw, (sw, sh))
+            draw_x = x + (width - sw) // 2
+            draw_y = y + (height - sh) // 2
+            self.screen.blit(self._patient_in_bed_sprite_cache[key], (draw_x, draw_y))
+            pygame.draw.rect(self.screen, RED, (x, y, width, height), 2)
+            return
+
+        # Fallback rectangles for empty bed or when sprite missing
+        color = LIGHT_GRAY if bed.available else DARK_GRAY
         pygame.draw.rect(self.screen, color, (x, y, width, height))
         pygame.draw.rect(self.screen, BLACK, (x, y, width, height), 2)
-        
         label = "BED" if bed.available else "OCCUPIED"
         label_text = self.small_font.render(label, True, BLACK if bed.available else WHITE)
         text_rect = label_text.get_rect(center=(x + width // 2, y + height // 2))
@@ -228,7 +294,7 @@ class ModernSimICU:
         # Draw waiting patients
         waiting_patients = self.env.game.get_waiting_patients()
         for i, patient in enumerate(waiting_patients[:6]):  # Show up to 6
-            self.draw_patient(patient, 50 + i * 120, self.waiting_room_y + 20)
+            self.draw_patient(patient, 50 + i * 120, self.waiting_room_y + 20, minimal=True)
         
         # Draw bed area
         bed_title = self.font.render("ICU BEDS", True, WHITE)
@@ -240,9 +306,10 @@ class ModernSimICU:
             self.draw_bed(bed, bed_x, bed_y)
             
             # Draw patient in bed if occupied
-            for patient in self.env.game.patients:
-                if patient.assigned_bed == bed:
-                    self.draw_patient(patient, bed_x + 10, bed_y - 20, 100, 60)
+            if not getattr(self, "patient_in_bed_sprite_raw", None):
+                for patient in self.env.game.patients:
+                    if patient.assigned_bed == bed:
+                        self.draw_patient(patient, bed_x + 10, bed_y - 20, 100, 60)
         
         # Draw ventilators
         vent_title = self.font.render("VENTILATORS", True, WHITE)
