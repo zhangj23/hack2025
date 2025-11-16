@@ -35,9 +35,16 @@ class RetroSimICU:
         self.screen = pygame.display.set_mode((self.width, self.height))
         pygame.display.set_caption("SimICU - Retro Mode")
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 24)
-        self.small_font = pygame.font.Font(None, 18)
-        self.large_font = pygame.font.Font(None, 36)
+        # Retro-styled fonts (bigger, crisp). Using pygame bundled font as fallback.
+        try:
+            base_font = pygame.font.match_font('freesansbold')
+        except Exception:
+            base_font = None
+        self.retro_antialias = False  # disable AA for a pixel/retro look
+        self.small_font = pygame.font.Font(base_font, 22)
+        self.font = pygame.font.Font(base_font, 28)
+        self.large_font = pygame.font.Font(base_font, 40)
+        self.title_font = pygame.font.Font(base_font, 64)
         
         # Initialize game
         self.game = SimICU()
@@ -48,6 +55,7 @@ class RetroSimICU:
         self.update_every_n_frames = 2  # higher -> slower simulation
         self._frame_counter = 0
         self.paused = False
+        self.show_intro = True
 
         # Sprites
         base_dir = os.path.dirname(__file__)
@@ -406,47 +414,47 @@ class RetroSimICU:
         y_offset = panel_y + 20
         
         # Title
-        title = self.large_font.render("SIMICU", True, WHITE)
+        title = self.large_font.render("SIMICU", self.retro_antialias, WHITE)
         self.screen.blit(title, (panel_x + 20, y_offset))
         y_offset += 50
         
         # Score
         score = self.game.get_score()
-        score_text = self.font.render(f"Saved: {score['patients_saved']}", True, GREEN)
+        score_text = self.font.render(f"Saved: {score['patients_saved']}", self.retro_antialias, GREEN)
         self.screen.blit(score_text, (panel_x + 20, y_offset))
         y_offset += 30
         
-        lost_text = self.font.render(f"Lost: {score['patients_lost']}", True, RED)
+        lost_text = self.font.render(f"Lost: {score['patients_lost']}", self.retro_antialias, RED)
         self.screen.blit(lost_text, (panel_x + 20, y_offset))
         y_offset += 30
         
         # Tick
-        tick_text = self.font.render(f"Tick: {self.game.tick}", True, WHITE)
+        tick_text = self.font.render(f"Tick: {self.game.tick}", self.retro_antialias, WHITE)
         self.screen.blit(tick_text, (panel_x + 20, y_offset))
         y_offset += 40
         
         # Speed/FPS display
-        speed_text = self.font.render(f"FPS: {self.fps}", True, WHITE)
+        speed_text = self.font.render(f"FPS: {self.fps}", self.retro_antialias, WHITE)
         self.screen.blit(speed_text, (panel_x + 20, y_offset))
         y_offset += 30
-        rate_text = self.small_font.render(f"Tick every {self.update_every_n_frames} frame(s)", True, WHITE)
+        rate_text = self.small_font.render(f"Tick every {self.update_every_n_frames} frame(s)", self.retro_antialias, WHITE)
         self.screen.blit(rate_text, (panel_x + 20, y_offset))
         y_offset += 25
         
         # Resources
-        resources_title = self.font.render("Resources:", True, WHITE)
+        resources_title = self.font.render("Resources:", self.retro_antialias, WHITE)
         self.screen.blit(resources_title, (panel_x + 20, y_offset))
         y_offset += 30
         
-        nurses_text = self.font.render(f"Nurses: {self.game.free_nurses}/{self.game.num_nurses}", True, WHITE)
+        nurses_text = self.font.render(f"Nurses: {self.game.free_nurses}/{self.game.num_nurses}", self.retro_antialias, WHITE)
         self.screen.blit(nurses_text, (panel_x + 20, y_offset))
         y_offset += 25
         
-        beds_text = self.font.render(f"Beds: {self.game.free_beds}/{self.game.num_beds}", True, WHITE)
+        beds_text = self.font.render(f"Beds: {self.game.free_beds}/{self.game.num_beds}", self.retro_antialias, WHITE)
         self.screen.blit(beds_text, (panel_x + 20, y_offset))
         y_offset += 25
         
-        vents_text = self.font.render(f"Vents: {self.game.free_vents}/{self.game.num_ventilators}", True, WHITE)
+        vents_text = self.font.render(f"Vents: {self.game.free_vents}/{self.game.num_ventilators}", self.retro_antialias, WHITE)
         self.screen.blit(vents_text, (panel_x + 20, y_offset))
         y_offset += 40
         
@@ -463,13 +471,13 @@ class RetroSimICU:
         ]
         
         for instruction in instructions:
-            inst_text = self.small_font.render(instruction, True, YELLOW)
+            inst_text = self.small_font.render(instruction, self.retro_antialias, YELLOW)
             self.screen.blit(inst_text, (panel_x + 20, y_offset))
             y_offset += 20
         
         # Pause indicator
         if self.paused:
-            pause_text = self.large_font.render("PAUSED", True, YELLOW)
+            pause_text = self.large_font.render("PAUSED", self.retro_antialias, YELLOW)
             text_rect = pause_text.get_rect(center=(panel_x + self.ui_panel_width // 2, self.height - 50))
             self.screen.blit(pause_text, text_rect)
     
@@ -541,9 +549,11 @@ class RetroSimICU:
     def draw(self):
         """Draw the entire game screen"""
         self.screen.fill(BLACK)
+        if self.show_intro:
+            return self.draw_intro_overlay()
         
         # Draw waiting room
-        waiting_title = self.font.render("WAITING ROOM", True, WHITE)
+        waiting_title = self.font.render("WAITING ROOM", self.retro_antialias, WHITE)
         self.screen.blit(waiting_title, (50, 20))
         pygame.draw.rect(self.screen, DARK_GRAY, 
                         (50, self.waiting_room_y, 800, self.waiting_room_height))
@@ -557,7 +567,7 @@ class RetroSimICU:
             self.draw_patient(patient, 50 + i * 120, self.waiting_room_y + 20, minimal=True)
         
         # Draw bed area
-        bed_title = self.font.render("ICU BEDS", True, WHITE)
+        bed_title = self.font.render("ICU BEDS", self.retro_antialias, WHITE)
         self.screen.blit(bed_title, (50, self.bed_area_y - 30))
         
         for i, bed in enumerate(self.game.beds):
@@ -574,7 +584,7 @@ class RetroSimICU:
                         self.draw_patient(patient, bed_x + 10, bed_y - 20, 100, 60)
         
         # Draw ventilators
-        vent_title = self.font.render("VENTILATORS", True, WHITE)
+        vent_title = self.font.render("VENTILATORS", self.retro_antialias, WHITE)
         self.screen.blit(vent_title, (700, self.bed_area_y - 30))
         
         for i, vent in enumerate(self.game.ventilators):
@@ -588,7 +598,7 @@ class RetroSimICU:
                     self.draw_patient(patient, vent_x + 10, vent_y - 20, 100, 60)
         
         # Draw nurses (animated between station and patient)
-        nurse_title = self.font.render("NURSES", True, WHITE)
+        nurse_title = self.font.render("NURSES", self.retro_antialias, WHITE)
         self.screen.blit(nurse_title, (850, self.bed_area_y - 30))
         # Define stations and update positions
         for i, nurse in enumerate(self.game.nurses):
@@ -606,6 +616,40 @@ class RetroSimICU:
         self.draw_ui_panel()
         
         pygame.display.flip()
+
+    def draw_intro_overlay(self):
+        """Intro screen with title, description, and Play button."""
+        self.screen.fill(BLACK)
+        title = self.title_font.render("SIMICU - RETRO MODE", self.retro_antialias, YELLOW)
+        subtitle = self.large_font.render("HUMAN VS AI ICU MANAGEMENT", self.retro_antialias, WHITE)
+        self.screen.blit(title, ((self.width - title.get_width()) // 2, 120))
+        self.screen.blit(subtitle, ((self.width - subtitle.get_width()) // 2, 165))
+
+        lines = [
+            "Goal: Save as many patients as possible with limited beds, nurses, and ventilators.",
+            "Patients worsen while waiting; treatment has setup delays; step-down beds cause ICU gridlock.",
+            "",
+            "How to Play:",
+            " - Click a patient in the waiting room to select.",
+            " - Click an available bed to admit, or a ventilator to escalate.",
+            " - SPACE: Pause/Resume   R: Reset",
+        ]
+        y = 220
+        for line in lines:
+            t = self.font.render(line, self.retro_antialias, LIGHT_GRAY)
+            self.screen.blit(t, (100, y))
+            y += 24
+
+        btn_w, btn_h = 220, 56
+        btn_x = (self.width - btn_w) // 2
+        btn_y = y + 30
+        pygame.draw.rect(self.screen, BLUE, (btn_x, btn_y, btn_w, btn_h), border_radius=6)
+        pygame.draw.rect(self.screen, WHITE, (btn_x, btn_y, btn_w, btn_h), 2, border_radius=6)
+        btn_text = self.large_font.render("PLAY", self.retro_antialias, WHITE)
+        self.screen.blit(btn_text, (btn_x + (btn_w - btn_text.get_width()) // 2,
+                                    btn_y + (btn_h - btn_text.get_height()) // 2))
+        self._intro_button = (btn_x, btn_y, btn_w, btn_h)
+        pygame.display.flip()
     
     def run(self):
         """Main game loop"""
@@ -617,13 +661,26 @@ class RetroSimICU:
                     running = False
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
+                        if self.show_intro:
+                            if hasattr(self, "_intro_button"):
+                                bx, by, bw, bh = self._intro_button
+                                mx, my = event.pos
+                                if bx <= mx <= bx + bw and by <= my <= by + bh:
+                                    self.show_intro = False
+                            continue
                         self.handle_click(event.pos)
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_SPACE:
-                        self.paused = not self.paused
+                        if self.show_intro:
+                            self.show_intro = False
+                        else:
+                            self.paused = not self.paused
                     elif event.key == pygame.K_r:
-                        self.game.reset()
-                        self.selected_patient = None
+                        if self.show_intro:
+                            self.show_intro = False
+                        else:
+                            self.game.reset()
+                            self.selected_patient = None
                     elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
                         self.fps = min(30, self.fps + 1)
                     elif event.key == pygame.K_MINUS:
@@ -635,10 +692,11 @@ class RetroSimICU:
             
             if not self.paused:
                 # Update game
-                self._frame_counter = (self._frame_counter + 1) % self.update_every_n_frames
-                if self._frame_counter == 0:
-                    for _ in range(self.tick_speed):
-                        self.game.update_tick()
+                if not self.show_intro:
+                    self._frame_counter = (self._frame_counter + 1) % self.update_every_n_frames
+                    if self._frame_counter == 0:
+                        for _ in range(self.tick_speed):
+                            self.game.update_tick()
                 # Decrement human input cooldown
                 if self.input_cooldown_ticks > 0:
                     self.input_cooldown_ticks -= 1
