@@ -56,6 +56,7 @@ class RetroSimICU:
         self._frame_counter = 0
         self.paused = False
         self.show_intro = True
+        self.game_over = False
 
         # Sprites
         base_dir = os.path.dirname(__file__)
@@ -752,6 +753,8 @@ class RetroSimICU:
     
     def handle_click(self, pos):
         """Handle mouse click"""
+        if self.game_over:
+            return
         x, y = pos
         
         # Check if clicking in waiting room
@@ -875,6 +878,8 @@ class RetroSimICU:
             self.screen.fill(BLACK)
         if self.show_intro:
             return self.draw_intro_overlay()
+        if self.game_over:
+            return self.draw_game_over_overlay()
 
         # Update actor positions first so rendering reflects latest arrivals/assignments
         # (e.g., remove waiting-room sprite the instant a nurse reaches bed/vent)
@@ -1075,6 +1080,7 @@ class RetroSimICU:
                         else:
                             self.game.reset()
                             self.selected_patient = None
+                            self.game_over = False
                     elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
                         self.fps = min(30, self.fps + 1)
                     elif event.key == pygame.K_MINUS:
@@ -1091,6 +1097,9 @@ class RetroSimICU:
                     if self._frame_counter == 0:
                         for _ in range(self.tick_speed):
                             self.game.update_tick()
+                            if self.game.patients_lost >= 10:
+                                self.game_over = True
+                                break
                 # Decrement human input cooldown
                 if self.input_cooldown_ticks > 0:
                     self.input_cooldown_ticks -= 1
@@ -1100,6 +1109,28 @@ class RetroSimICU:
         
         pygame.quit()
         sys.exit()
+
+    def draw_game_over_overlay(self):
+        """Render ending screen when the game is over."""
+        self.screen.fill(BLACK)
+        title = self.title_font.render("GAME OVER", self.retro_antialias, YELLOW)
+        subtitle = self.large_font.render("Too many patients were lost.", self.retro_antialias, WHITE)
+        self.screen.blit(title, ((self.width - title.get_width()) // 2, 140))
+        self.screen.blit(subtitle, ((self.width - subtitle.get_width()) // 2, 195))
+
+        score = self.game.get_score()
+        lines = [
+            f"Saved: {score['patients_saved']}",
+            f"Lost: {score['patients_lost']}",
+            "",
+            "Press R to restart"
+        ]
+        y = 260
+        for line in lines:
+            t = self.font.render(line, self.retro_antialias, LIGHT_GRAY)
+            self.screen.blit(t, ((self.width - t.get_width()) // 2, y))
+            y += 30
+        pygame.display.flip()
 
 
 if __name__ == "__main__":

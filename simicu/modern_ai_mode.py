@@ -46,6 +46,12 @@ def main(model_path: str = "models/sim_icu_ai_agent"):
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 running = False
 
+        # If Retro view signaled game over, freeze counts and just render
+        if getattr(ui, 'game_over', False):
+            ui.draw()
+            clock.tick(10)
+            continue
+
         # Build observation from the Retro game's state
         obs = build_obs_from_game(env_helper, ui.game)
         action, _ = model.predict(obs, deterministic=True)
