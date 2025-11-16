@@ -7,7 +7,7 @@ for reinforcement learning.
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from sim_icu_logic import SimICU, PatientStatus
+from sim_icu_logic import SimICU, PatientStatus, PatientType
 
 
 class SimICUEnv(gym.Env):
@@ -37,10 +37,10 @@ class SimICUEnv(gym.Env):
         self.action_space = spaces.MultiDiscrete([max_patients, 3])
         
         # Define observation space (state space)
-        # For each patient: [severity, time_waiting, status_encoded]
-        # Plus: [free_beds, free_nurses, free_vents, tick]
+        # For each patient: [severity, time_waiting, status_encoded, type_encoded]
+        # Plus: [free_beds, free_nurses, free_vents, free_step_down, tick]
         # Status encoding: 0=waiting, 1=in_bed, 2=on_ventilator, 3=cured, 4=lost
-        state_size = (max_patients * 3) + 4
+        state_size = (max_patients * 4) + 5
         self.observation_space = spaces.Box(
             low=0.0,
             high=1.0,  # <-- CRITICAL: Change from 1000.0 to 1.0
@@ -54,11 +54,20 @@ class SimICUEnv(gym.Env):
             PatientStatus.WAITING: 0.0,
             PatientStatus.IN_BED: 1.0,
             PatientStatus.ON_VENTILATOR: 2.0,
+            PatientStatus.PENDING_DISCHARGE: 3.0,
             PatientStatus.CURED: 3.0,
             PatientStatus.LOST: 4.0
         }
         return status_map.get(status, 0.0)
     
+    def _encode_type(self, t: PatientType) -> float:
+        type_map = {
+            PatientType.RESPIRATORY: 0.0,
+            PatientType.CARDIAC: 0.5,
+            PatientType.TRAUMA: 1.0,
+        }
+        return type_map.get(t, 0.0)
+
     def _get_state(self) -> np.ndarray:
         """
         Build the state array from the current game state.
@@ -80,19 +89,27 @@ class SimICUEnv(gym.Env):
             if i < len(all_patients):
                 patient = all_patients[i]
                 # Normalize patient data to [0, 1]
-                state[i * 3] = float(patient.severity) / 100.0  # Max severity is 100
-                state[i * 3 + 1] = float(patient.time_waiting) / self.max_ticks  # Max time is max_ticks
-                state[i * 3 + 2] = self._encode_status(patient.status) / 4.0  # Max status code is 4
+                base = i * 4
+                state[base] = float(patient.severity) / 100.0  # Max severity is 100
+                state[base + 1] = float(patient.time_waiting) / self.max_ticks  # Max time is max_ticks
+                state[base + 2] = self._encode_status(patient.status) / 4.0  # Max status code is 4
+                state[base + 3] = self._encode_type(patient.patient_type)  # [0,1]
             else:
                 # No patient in this slot - use default values
-                state[i * 3] = 0.0  # severity
-                state[i * 3 + 1] = 0.0  # time_waiting
-                state[i * 3 + 2] = 1.0  # status = lost (invalid slot, normalized to 1.0)
+                base = i * 4
+                state[base] = 0.0  # severity
+                state[base + 1] = 0.0  # time_waiting
+                state[base + 2] = 1.0  # status = lost (invalid slot, normalized to 1.0)
+                state[base + 3] = 0.0  # type
         
         # Normalize resource counts and tick
-        state[-4] = float(self.game.free_beds) / max_beds if max_beds > 0 else 0.0
-        state[-3] = float(self.game.free_nurses) / max_nurses if max_nurses > 0 else 0.0
-        state[-2] = float(self.game.free_vents) / max_vents if max_vents > 0 else 0.0
+        state[-5] = float(self.game.free_beds) / max_beds if max_beds > 0 else 0.0
+        state[-4] = float(self.game.free_nurses) / max_nurses if max_nurses > 0 else 0.0
+        state[-3] = float(self.game.free_vents) / max_vents if max_vents > 0 else 0.0
+        # Step-down beds (normalized)
+        max_step = getattr(self.game, "num_step_down_beds", 1) or 1
+        free_step = getattr(self.game, "_free_step_down_beds", 0)
+        state[-2] = float(free_step) / float(max_step)
         state[-1] = float(self.game.tick) / self.max_ticks
         
         return state

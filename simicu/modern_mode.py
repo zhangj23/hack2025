@@ -8,7 +8,7 @@ import sys
 import numpy as np
 from stable_baselines3 import PPO
 from sim_icu_env import SimICUEnv
-from sim_icu_logic import PatientStatus
+from sim_icu_logic import PatientStatus, PatientType
 import os
 
 
@@ -67,6 +67,11 @@ class ModernSimICU:
         self.bed_area_height = 400
         self.ui_panel_x = 900
         self.ui_panel_width = 300
+
+        # XAI log
+        self.reco_log = []  # list of strings
+        self.max_log_lines = 10
+        self.show_emr = False
 
         # Patient sprite (standing)
         base_dir = os.path.dirname(__file__)
@@ -265,6 +270,7 @@ class ModernSimICU:
             "SPACE: Pause/Resume",
             "R: Reset episode",
             "+/-: Speed up/down",
+            "E: Toggle EMR mockup",
             "ESC: Quit"
         ]
         
@@ -272,6 +278,16 @@ class ModernSimICU:
             ctrl_text = self.small_font.render(control, True, YELLOW)
             self.screen.blit(ctrl_text, (panel_x + 20, y_offset))
             y_offset += 20
+
+        # XAI log
+        y_offset += 10
+        xai_title = self.font.render("AI Recommendation Log", True, WHITE)
+        self.screen.blit(xai_title, (panel_x + 20, y_offset))
+        y_offset += 28
+        for line in self.reco_log[-self.max_log_lines:]:
+            line_text = self.small_font.render(line, True, LIGHT_GRAY)
+            self.screen.blit(line_text, (panel_x + 20, y_offset))
+            y_offset += 18
         
         # Pause indicator
         if self.paused:
@@ -335,6 +351,49 @@ class ModernSimICU:
         self.draw_ui_panel()
         
         pygame.display.flip()
+
+    def _push_reco(self, text: str):
+        self.reco_log.append(text)
+        if len(self.reco_log) > 200:
+            self.reco_log = self.reco_log[-200:]
+
+    def _heuristic_reason(self, patient, action_type):
+        crisis_score = patient.severity * max(1, patient.time_waiting)
+        typ = patient.patient_type.value if hasattr(patient, "patient_type") else "unknown"
+        if action_type == 1:
+            return f"RECOMMENDING: Patient {patient.id} -> Vent | REASON: Crisis={crisis_score:.0f}, type={typ}"
+        elif action_type == 0:
+            return f"RECOMMENDING: Patient {patient.id} -> Bed | REASON: Crisis={crisis_score:.0f}, vents busy"
+        else:
+            return f"RECOMMENDING: No-op | REASON: No valid resources or strategic wait"
+
+    def _draw_emr_overlay(self):
+        if not self.show_emr:
+            return
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        self.screen.blit(overlay, (0, 0))
+        # Mock EMR card
+        card_w, card_h = 520, 300
+        card_x, card_y = (self.width - card_w) // 2, (self.height - card_h) // 2
+        pygame.draw.rect(self.screen, DARK_GRAY, (card_x, card_y, card_w, card_h))
+        pygame.draw.rect(self.screen, WHITE, (card_x, card_y, card_w, card_h), 2)
+        title = self.large_font.render("EMR Integration (Mock)", True, YELLOW)
+        self.screen.blit(title, (card_x + 20, card_y + 16))
+        # Example patient
+        if self.env.game.patients:
+            p = max(self.env.game.patients, key=lambda q: q.severity * max(1, q.time_waiting))
+            lines = [
+                f"Patient #{p.id} | Type: {getattr(p, 'patient_type', PatientType.RESPIRATORY).value}",
+                f"Severity: {p.severity:.0f}   Waiting: {p.time_waiting}   Status: {p.status.value}",
+                "AI Suggests: " + ("Ventilator" if self.env.game.free_vents > 0 else "Bed" if self.env.game.free_beds > 0 else "Observe"),
+                "Reason: Max crisis score across cohort"
+            ]
+            y = card_y + 70
+            for line in lines:
+                t = self.font.render(line, True, WHITE)
+                self.screen.blit(t, (card_x + 20, y))
+                y += 28
     
     def run(self):
         """Main game loop"""
@@ -358,12 +417,22 @@ class ModernSimICU:
                         self.speed = max(1, self.speed - 1)
                     elif event.key == pygame.K_ESCAPE:
                         running = False
+                    elif event.key == pygame.K_e:
+                        self.show_emr = not self.show_emr
             
             if not self.paused and not done:
                 # Let AI make decisions
                 for _ in range(self.speed):
                     action, _ = self.model.predict(self.obs, deterministic=True)
                     self.obs, reward, terminated, truncated, self.info = self.env.step(action)
+                    # XAI log: try to reconstruct which patient was acted on
+                    try:
+                        pid, at = int(action[0]), int(action[1])
+                        if pid < len(self.env.game.patients):
+                            p = self.env.game.patients[pid]
+                            self._push_reco(self._heuristic_reason(p, at))
+                    except Exception:
+                        pass
                     done = terminated or truncated
                     
                     if done:
@@ -385,6 +454,8 @@ class ModernSimICU:
                         break
             
             self.draw()
+            # EMR overlay after drawing
+            self._draw_emr_overlay()
             self.clock.tick(10)  # 10 FPS
         
         pygame.quit()

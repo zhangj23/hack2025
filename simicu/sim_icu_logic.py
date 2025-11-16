@@ -14,8 +14,14 @@ class PatientStatus(Enum):
     WAITING = "waiting"
     IN_BED = "in_bed"
     ON_VENTILATOR = "on_ventilator"
+    PENDING_DISCHARGE = "pending_discharge"
     CURED = "cured"
     LOST = "lost"
+
+class PatientType(Enum):
+    RESPIRATORY = "respiratory"
+    CARDIAC = "cardiac"
+    TRAUMA = "trauma"
 
 
 class Patient:
@@ -35,6 +41,8 @@ class Patient:
         # Setup times: when (re)assigned, treatment is delayed during setup
         self.bed_setup_ticks = 0
         self.vent_setup_ticks = 0
+        # Archetype
+        self.patient_type = random.choice([PatientType.RESPIRATORY, PatientType.CARDIAC, PatientType.TRAUMA])
         
     def update(self):
         """Update patient state each tick"""
@@ -50,19 +58,35 @@ class Patient:
             if self.bed_setup_ticks > 0:
                 self.bed_setup_ticks -= 1
             else:
-                self.severity = min(100.0, self.severity + 1.5)
+                # Effectiveness varies by patient type
+                base = 1.5
+                if self.patient_type == PatientType.RESPIRATORY:
+                    eff = base * 1.0
+                elif self.patient_type == PatientType.CARDIAC:
+                    eff = base * 1.2
+                else:
+                    eff = base * 0.9
+                self.severity = min(100.0, self.severity + eff)
             
         elif self.status == PatientStatus.ON_VENTILATOR:
             # Gain life faster with ventilator
             if self.vent_setup_ticks > 0:
                 self.vent_setup_ticks -= 1
             else:
-                self.severity = min(100.0, self.severity + 3.0)
+                # Ventilator most effective for respiratory patients
+                base = 3.0
+                if self.patient_type == PatientType.RESPIRATORY:
+                    eff = base * 1.5
+                elif self.patient_type == PatientType.CARDIAC:
+                    eff = base * 0.6
+                else:
+                    eff = base * 1.0
+                self.severity = min(100.0, self.severity + eff)
         
         # Check for state transitions
-        if self.severity >= 100.0 and self.status != PatientStatus.CURED:
-            self.status = PatientStatus.CURED
-            self._release_resources()
+        if self.severity >= 100.0 and self.status not in [PatientStatus.CURED, PatientStatus.PENDING_DISCHARGE]:
+            # Do NOT cure immediately: move to pending discharge, keep ICU resources
+            self.status = PatientStatus.PENDING_DISCHARGE
         elif self.severity <= 0.0 and self.status != PatientStatus.LOST:
             self.status = PatientStatus.LOST
             self._release_resources()
@@ -104,10 +128,11 @@ class Ventilator:
 class SimICU:
     """Core ICU simulation engine"""
     
-    def __init__(self, num_nurses: int = 6, num_beds: int = 10, num_ventilators: int = 4, max_patients_on_arrival=3, arrival_rate=0.10):
+    def __init__(self, num_nurses: int = 6, num_beds: int = 10, num_ventilators: int = 4, max_patients_on_arrival=3, arrival_rate=0.10, num_step_down_beds: int = 20):
         self.num_nurses = num_nurses
         self.num_beds = num_beds
         self.num_ventilators = num_ventilators
+        self.num_step_down_beds = num_step_down_beds
         
         # Initialize resources
         self.nurses = [Nurse(i) for i in range(num_nurses)]
@@ -138,6 +163,8 @@ class SimICU:
         self._free_beds = num_beds
         self._free_nurses = num_nurses
         self._free_vents = num_ventilators
+        self._free_step_down_beds = num_step_down_beds
+        self._step_down_occupancies: List[int] = []
         
         self.reset()
          
@@ -159,6 +186,8 @@ class SimICU:
         self._free_beds = self.num_beds
         self._free_nurses = self.num_nurses
         self._free_vents = self.num_ventilators
+        self._free_step_down_beds = self.num_step_down_beds
+        self._step_down_occupancies = []
 
         # Reset resources
         for nurse in self.nurses:
@@ -324,6 +353,17 @@ class SimICU:
             self.add_patient()
             self.next_arrival = self.tick + self._generate_next_arrival()
         
+        # Release step-down beds whose occupancy elapsed
+        if self._step_down_occupancies:
+            remaining: List[int] = []
+            for t in self._step_down_occupancies:
+                t -= 1
+                if t <= 0:
+                    self._free_step_down_beds += 1
+                else:
+                    remaining.append(t)
+            self._step_down_occupancies = remaining
+
         # Update all patients
         for patient in self.patients:
             prev_status = patient.status
@@ -349,6 +389,21 @@ class SimICU:
             # Track wait time
             if patient.status == PatientStatus.WAITING:
                 self.total_wait_time += 1
+
+        # Move pending discharges if step-down bed available
+        for patient in self.patients:
+            if patient.status == PatientStatus.PENDING_DISCHARGE and self._free_step_down_beds > 0:
+                self._free_step_down_beds -= 1
+                # Occupy step-down for 10 ticks
+                self._step_down_occupancies.append(10)
+                # Free ICU resources now
+                had_bed = patient.assigned_bed is not None
+                had_nurse = patient.assigned_nurse is not None
+                had_vent = patient.assigned_ventilator is not None
+                patient._release_resources()
+                self._release_patient_resources_counters(had_bed, had_nurse, had_vent)
+                patient.status = PatientStatus.CURED
+                self.just_saved_a_patient = True
         
         # Remove cured/lost patients after a delay (optional - for now keep them for stats)
         # In practice, you might want to remove them after a few ticks
