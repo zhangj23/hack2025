@@ -37,9 +37,11 @@ class ModernSimICU:
         self.screen = pygame.display.set_mode((self.width, self.height))
         pygame.display.set_caption("SimICU - Modern AI Mode")
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 24)
-        self.small_font = pygame.font.Font(None, 18)
-        self.large_font = pygame.font.Font(None, 36)
+        # Match Retro font sizing for visual parity
+        self.font = pygame.font.Font(None, 28)
+        self.small_font = pygame.font.Font(None, 22)
+        self.large_font = pygame.font.Font(None, 40)
+        self.retro_antialias = False
         
         # Load trained model
         print(f"Loading AI model from {model_path}...")
@@ -75,6 +77,23 @@ class ModernSimICU:
 
         # Nurse render size
         self.nurse_size = 56
+        self.nurse_speed = 28.0
+
+        # Nurse animation state
+        self.nurse_positions = {}      # nurse -> (x,y)
+        self.nurse_paths = {}          # nurse -> [(wx,wy), ...]
+        self.nurse_stations = {}       # nurse -> (x,y)
+        self.pending_assignments = []  # [{'nurse': n, 'patient': p, 'bed': bed} | {'vent': vent}]
+        # Defer engine assignments until nurse arrival (to avoid immediate healing)
+        self.deferred_action = None
+        self.ready_to_apply_deferred = False
+
+        # Resource tile registries for targeting
+        self.bed_positions = {}        # bed -> (x,y,w,h)
+        self.vent_positions = {}       # vent -> (x,y,w,h)
+
+        # Movement simulation: patient_id -> {'x','y','tx','ty','speed'}
+        self.patient_moves = {}
 
         # Patient sprite (standing/selected) -> raised hand variant
         base_dir = os.path.dirname(__file__)
@@ -119,6 +138,36 @@ class ModernSimICU:
         except Exception:
             self.floor_bg_raw = None
         self._floor_bg_cache = {}
+
+        # Bed sprite (empty bed visual)
+        bed_path = os.path.join(base_dir, "sprites", "bed.png")
+        try:
+            self.bed_sprite_raw = pygame.image.load(bed_path).convert_alpha()
+        except Exception:
+            self.bed_sprite_raw = None
+        self._bed_sprite_cache = {}
+
+        # Vent sprites (empty and occupied)
+        vent_bed_path = os.path.join(base_dir, "sprites", "vent_bed.png")
+        vent_patient_path = os.path.join(base_dir, "sprites", "vent_patient.png")
+        try:
+            self.vent_bed_raw = pygame.image.load(vent_bed_path).convert_alpha()
+        except Exception:
+            self.vent_bed_raw = None
+        try:
+            self.vent_patient_raw = pygame.image.load(vent_patient_path).convert_alpha()
+        except Exception:
+            self.vent_patient_raw = None
+        self._vent_bed_cache = {}
+        self._vent_patient_cache = {}
+
+        # Nurse sprite
+        nurse_path = os.path.join(base_dir, "sprites", "nurse.png")
+        try:
+            self.nurse_sprite_raw = pygame.image.load(nurse_path).convert_alpha()
+        except Exception:
+            self.nurse_sprite_raw = None
+        self._nurse_sprite_cache = {}
     
     def draw_patient(self, patient, x, y, width=100, height=80, minimal=False):
         """Draw a patient icon (sprite if available).
@@ -142,8 +191,9 @@ class ModernSimICU:
                 if key not in self._patient_sprite_cache:
                     self._patient_sprite_cache[key] = pygame.transform.smoothscale(self.patient_sprite_raw, (tw, th))
                 sprite = self._patient_sprite_cache[key]
-                draw_x = x + (width - tw) // 2
-                draw_y = y + (height - th) // 2
+            if sprite is not None:
+                draw_x = x + (width - sprite.get_width()) // 2
+                draw_y = y + (height - sprite.get_height()) // 2
                 self.screen.blit(sprite, (draw_x, draw_y))
             bar_width = int((patient.severity / 100.0) * width)
             bar_color = GREEN if patient.severity >= 70 else ORANGE if patient.severity >= 40 else RED
@@ -151,6 +201,18 @@ class ModernSimICU:
             life_value = int(round(patient.severity))
             value_text = self.small_font.render(f"{life_value}", True, WHITE)
             self.screen.blit(value_text, (x + 5, y + 5))
+            # Type badge in waiting room (top-right small badge)
+            try:
+                t_letter = "R" if patient.patient_type == PatientType.RESPIRATORY else "C" if patient.patient_type == PatientType.CARDIAC else "T"
+                badge = self.small_font.render(t_letter, self.retro_antialias, BLACK)
+                bw, bh = badge.get_size()
+                pad = 4
+                bx = x + width - bw - pad - 2
+                by = y + 2
+                pygame.draw.rect(self.screen, YELLOW, (bx - 2, by - 2, bw + 4, bh + 4))
+                self.screen.blit(badge, (bx, by))
+            except Exception:
+                pass
             return
         drew_sprite = False
         if getattr(self, "patient_sprite_raw", None):
@@ -195,14 +257,21 @@ class ModernSimICU:
         self.screen.blit(severity_text, (x + 5, y + 35))
     
     def draw_bed(self, bed, x, y, width=120, height=120):
-        """Draw a bed tile and overlay patient info when occupied."""
-        # Base tile
-        color = LIGHT_GRAY if bed.available else DARK_GRAY
-        pygame.draw.rect(self.screen, color, (x, y, width, height))
-        border = GREEN if bed.available else RED
-        pygame.draw.rect(self.screen, border, (x, y, width, height), 2)
-        # Occupied overlay
-        if not bed.available:
+        """Draw a bed icon with sprites; overlay patient info when occupied."""
+        # Record tile for nurse targeting
+        self.bed_positions[bed] = (x, y, width, height)
+        # Empty bed sprite or fallback rect
+        if bed.available:
+            if getattr(self, "bed_sprite_raw", None):
+                key = (width, height)
+                if key not in self._bed_sprite_cache:
+                    self._bed_sprite_cache[key] = pygame.transform.smoothscale(self.bed_sprite_raw, (width, height))
+                self.screen.blit(self._bed_sprite_cache[key], (x, y))
+            else:
+                pygame.draw.rect(self.screen, LIGHT_GRAY, (x, y, width, height))
+            pygame.draw.rect(self.screen, GREEN, (x, y, width, height), 2)
+        else:
+            # Occupied: show patient-in-bed sprite if available
             if getattr(self, "patient_in_bed_sprite_raw", None):
                 sw = max(1, int(width * self.patient_in_bed_scale))
                 sh = max(1, int(height * self.patient_in_bed_scale))
@@ -212,7 +281,10 @@ class ModernSimICU:
                 draw_x = x + (width - sw) // 2
                 draw_y = y + (height - sh) // 2
                 self.screen.blit(self._patient_in_bed_sprite_cache[key], (draw_x, draw_y))
-            # Life bar and identifiers
+            else:
+                pygame.draw.rect(self.screen, DARK_GRAY, (x, y, width, height))
+            pygame.draw.rect(self.screen, RED, (x, y, width, height), 2)
+            # Overlay bar, id, type badge
             try:
                 patient = next(p for p in self.env.game.patients if p.assigned_bed == bed)
                 bar_width = int((patient.severity / 100.0) * width)
@@ -230,26 +302,60 @@ class ModernSimICU:
                 pass
     
     def draw_nurse(self, nurse, x, y, size=40):
-        """Draw a nurse icon"""
-        color = GREEN if nurse.available else RED
-        pygame.draw.circle(self.screen, color, (x + size // 2, y + size // 2), size // 2)
-        pygame.draw.circle(self.screen, BLACK, (x + size // 2, y + size // 2), size // 2, 2)
+        """Draw a nurse sprite (fallback to circle)"""
+        if getattr(self, "nurse_sprite_raw", None):
+            key = (size, size)
+            if key not in self._nurse_sprite_cache:
+                self._nurse_sprite_cache[key] = pygame.transform.smoothscale(self.nurse_sprite_raw, (size, size))
+            self.screen.blit(self._nurse_sprite_cache[key], (x, y))
+        else:
+            color = GREEN if nurse.available else RED
+            pygame.draw.circle(self.screen, color, (x + size // 2, y + size // 2), size // 2)
+            pygame.draw.circle(self.screen, BLACK, (x + size // 2, y + size // 2), size // 2, 2)
         
         label = "N" if nurse.available else "BUSY"
         label_text = self.small_font.render(label, True, WHITE)
         text_rect = label_text.get_rect(center=(x + size // 2, y + size // 2))
         self.screen.blit(label_text, text_rect)
     
-    def draw_ventilator(self, vent, x, y, width=100, height=60):
-        """Draw a ventilator icon"""
-        color = LIGHT_GRAY if vent.available else DARK_GRAY
-        pygame.draw.rect(self.screen, color, (x, y, width, height))
-        pygame.draw.rect(self.screen, BLACK, (x, y, width, height), 2)
-        
-        label = "VENT" if vent.available else "IN USE"
-        label_text = self.small_font.render(label, True, BLACK if vent.available else WHITE)
-        text_rect = label_text.get_rect(center=(x + width // 2, y + height // 2))
-        self.screen.blit(label_text, text_rect)
+    def draw_ventilator(self, vent, x, y, width=120, height=120):
+        """Draw a ventilator bed with sprites and overlay patient health bar when occupied."""
+        # Record tile for nurse targeting
+        self.vent_positions[vent] = (x, y, width, height)
+        occupied = not vent.available
+        if not occupied:
+            if getattr(self, "vent_bed_raw", None):
+                key = (width, height)
+                if key not in self._vent_bed_cache:
+                    self._vent_bed_cache[key] = pygame.transform.smoothscale(self.vent_bed_raw, (width, height))
+                self.screen.blit(self._vent_bed_cache[key], (x, y))
+            else:
+                pygame.draw.rect(self.screen, LIGHT_GRAY, (x, y, width, height))
+            pygame.draw.rect(self.screen, GREEN, (x, y, width, height), 2)
+        else:
+            if getattr(self, "vent_patient_raw", None):
+                key = (width, height)
+                if key not in self._vent_patient_cache:
+                    self._vent_patient_cache[key] = pygame.transform.smoothscale(self.vent_patient_raw, (width, height))
+                self.screen.blit(self._vent_patient_cache[key], (x, y))
+            else:
+                pygame.draw.rect(self.screen, DARK_GRAY, (x, y, width, height))
+            pygame.draw.rect(self.screen, RED, (x, y, width, height), 2)
+            # Overlay health bar for the patient on this ventilator
+            try:
+                patient = next(p for p in self.env.game.patients if p.assigned_ventilator == vent and p.status == PatientStatus.ON_VENTILATOR)
+                bar_width = int((patient.severity / 100.0) * width)
+                bar_color = GREEN if patient.severity >= 70 else ORANGE if patient.severity >= 40 else RED
+                pygame.draw.rect(self.screen, bar_color, (x, y + height - 10, bar_width, 10))
+                # Type badge
+                t_letter = "R" if patient.patient_type == PatientType.RESPIRATORY else "C" if patient.patient_type == PatientType.CARDIAC else "T"
+                badge = self.small_font.render(t_letter, self.retro_antialias, BLACK)
+                bw, bh = badge.get_size()
+                px, py = x + width - bw - 6, y + 2
+                pygame.draw.rect(self.screen, YELLOW, (px - 2, py - 2, bw + 4, bh + 4))
+                self.screen.blit(badge, (px, py))
+            except StopIteration:
+                pass
     
     def draw_ui_panel(self):
         """Draw the UI information panel"""
@@ -366,9 +472,9 @@ class ModernSimICU:
             pygame.draw.rect(self.screen, DARK_GRAY, (wr_x, wr_y, wr_w, wr_h))
         pygame.draw.rect(self.screen, WHITE, (wr_x, wr_y, wr_w, wr_h), 2)
         
-        # Draw waiting patients
-        waiting_patients = self.env.game.get_waiting_patients()
-        for i, patient in enumerate(waiting_patients[:6]):  # Show up to 6
+        # Draw waiting patients (exclude any currently walking to a target)
+        waiting_patients = [p for p in self.env.game.get_waiting_patients() if p.id not in self.patient_moves]
+        for i, patient in enumerate(waiting_patients[:6]):
             self.draw_patient(patient, 50 + i * 120, self.waiting_room_y + 20, minimal=True)
         
         # Draw bed area (shifted right to match Retro layout)
@@ -384,6 +490,9 @@ class ModernSimICU:
             if not getattr(self, "patient_in_bed_sprite_raw", None):
                 for patient in self.env.game.patients:
                     if patient.assigned_bed == bed:
+                        # Suppress overlay while patient is still moving to this bed
+                        if getattr(self, "patient_moves", None) and patient.id in self.patient_moves:
+                            continue
                         self.draw_patient(patient, bed_x + 10, bed_y - 20, 100, 60)
         
         # Draw ventilators (on the left)
@@ -392,19 +501,63 @@ class ModernSimICU:
         
         for i, vent in enumerate(self.env.game.ventilators):
             vent_x = 50
-            vent_y = self.bed_area_y + 50 + i * 80
+            vent_y = self.bed_area_y + 50 + i * 120
             self.draw_ventilator(vent, vent_x, vent_y)
             
             # Draw patient on ventilator if occupied
-            for patient in self.env.game.patients:
-                if patient.assigned_ventilator == vent:
-                    self.draw_patient(patient, vent_x + 10, vent_y - 20, 100, 60)
+            if not getattr(self, "vent_patient_raw", None):
+                for patient in self.env.game.patients:
+                    if patient.assigned_ventilator == vent:
+                        if getattr(self, "patient_moves", None) and patient.id in self.patient_moves:
+                            continue
+                        self.draw_patient(patient, vent_x + 10, vent_y - 20, 100, 60)
+
+        # Draw moving patients (walking overlays)
+        if self.patient_moves:
+            remove_ids = []
+            for pid, mv in self.patient_moves.items():
+                # Advance towards target
+                dx = mv['tx'] - mv['x']
+                dy = mv['ty'] - mv['y']
+                dist = max(1e-6, (dx*dx + dy*dy) ** 0.5)
+                step = min(mv['speed'], dist)
+                mv['x'] += (dx / dist) * step
+                mv['y'] += (dy / dist) * step
+                # Draw larger walking sprite + health bar
+                patient = next((p for p in self.env.game.patients if p.id == pid), None)
+                if patient is not None:
+                    # sprite
+                    if getattr(self, "patient_sprite_raw", None):
+                        key = (140, 110, "walk")
+                        if key not in self._patient_sprite_cache:
+                            src_w, src_h = self.patient_sprite_raw.get_size()
+                            scale = min(140 / src_w, 110 / src_h)
+                            scaled = (max(1, int(src_w * scale)), max(1, int(src_h * scale)))
+                            self._patient_sprite_cache[key] = pygame.transform.smoothscale(self.patient_sprite_raw, scaled)
+                        sprite = self._patient_sprite_cache[key]
+                        sx = int(mv['x']) + (140 - sprite.get_width()) // 2
+                        sy = int(mv['y']) + (110 - sprite.get_height()) // 2
+                        self.screen.blit(sprite, (sx, sy))
+                    # bar
+                    bar_w = int((patient.severity / 100.0) * 140)
+                    bar_col = GREEN if patient.severity >= 70 else ORANGE if patient.severity >= 40 else RED
+                    pygame.draw.rect(self.screen, bar_col, (int(mv['x']), int(mv['y']) + 100, bar_w, 10))
+                # Arrival check
+                if dist <= mv['speed'] + 0.1:
+                    remove_ids.append(pid)
+            for rid in remove_ids:
+                self.patient_moves.pop(rid, None)
         
         # Draw nurses
         nurse_title = self.font.render("NURSES", True, WHITE)
         self.screen.blit(nurse_title, (850, self.bed_area_y - 30))
+        # Define stations (fixed positions at right panel like Retro)
         for i, nurse in enumerate(self.env.game.nurses):
-            self.draw_nurse(nurse, 850, self.bed_area_y + 50 + i * 56, self.nurse_size)
+            self.nurse_stations[nurse] = (850, self.bed_area_y + 50 + i * 56)
+        # Draw animated nurses at current positions (fallback to station)
+        for nurse in self.env.game.nurses:
+            nx, ny = self.nurse_positions.get(nurse, self.nurse_stations[nurse])
+            self.draw_nurse(nurse, int(nx), int(ny), self.nurse_size)
         
         # Draw UI panel
         self.draw_ui_panel()
@@ -482,7 +635,42 @@ class ModernSimICU:
             if not self.paused and not done:
                 # Let AI make decisions
                 for _ in range(self.speed):
+                    # If a deferred assignment is ready (nurse arrived), apply it now
+                    if self.ready_to_apply_deferred and self.deferred_action is not None:
+                        self.obs, reward, terminated, truncated, self.info = self.env.step(self.deferred_action)
+                        self.deferred_action = None
+                        self.ready_to_apply_deferred = False
+                        done = terminated or truncated
+                        if done:
+                            break
+
                     action, _ = self.model.predict(self.obs, deterministic=True)
+                    # If any patient is walking or a nurse is already en route, block new assignments
+                    try:
+                        if (getattr(self, "patient_moves", None) and len(self.patient_moves) > 0) \
+                           or (getattr(self, "pending_assignments", None) and len(self.pending_assignments) > 0):
+                            pid, at = int(action[0]), int(action[1])
+                            if at in (0, 1):
+                                # convert to no-op while movement in progress
+                                action = np.array([0, 2], dtype=np.int64)
+                                self._push_reco("Blocked: movement in progress -> NO-OP")
+                    except Exception:
+                        pass
+                    # Prepare movement start if assigning from waiting room
+                    start_pos = None
+                    try:
+                        pid, at = int(action[0]), int(action[1])
+                        if at in (0, 1) and pid < len(self.env.game.patients):
+                            pre_p = self.env.game.patients[pid]
+                            if pre_p.status == PatientStatus.WAITING:
+                                wait_list = self.env.game.get_waiting_patients()
+                                # index among first 6 slots visually shown
+                                if pre_p in wait_list:
+                                    idx = wait_list.index(pre_p)
+                                    start_pos = (50 + idx * 120, self.waiting_room_y + 20)
+                    except Exception:
+                        pass
+ 
                     self.obs, reward, terminated, truncated, self.info = self.env.step(action)
                     # XAI log: try to reconstruct which patient was acted on
                     try:
@@ -490,28 +678,68 @@ class ModernSimICU:
                         if pid < len(self.env.game.patients):
                             p = self.env.game.patients[pid]
                             self._push_reco(self._heuristic_reason(p, at))
+                            # Create walking overlay towards new assignment target; defer engine assignment until nurse arrives
+                            if start_pos and at in (0, 1) and (self.deferred_action is None):
+                                # Determine target tile based on new assignment
+                                tx, ty = None, None
+                                target_bed = None
+                                target_vent = None
+                                if getattr(p, "assigned_bed", None) is not None:
+                                    # compute bed tile position
+                                    try:
+                                        target_bed = p.assigned_bed
+                                        bi = self.env.game.beds.index(target_bed)
+                                        tx = 200 + (bi % 4) * 150 + 10
+                                        ty = self.bed_area_y + 50 + (bi // 4) * 120 - 20
+                                    except ValueError:
+                                        pass
+                                elif getattr(p, "assigned_ventilator", None) is not None:
+                                    try:
+                                        target_vent = p.assigned_ventilator
+                                        vi = self.env.game.ventilators.index(target_vent)
+                                        tx = 50 + 10
+                                        ty = self.bed_area_y + 50 + vi * 120 - 20
+                                    except ValueError:
+                                        pass
+                                if tx is not None and ty is not None:
+                                    # Start movement for this patient if not already moving
+                                    if (not getattr(self, "patient_moves", None)) or (p.id not in self.patient_moves):
+                                        # Only allow if no other patient is currently moving (human parity)
+                                        if (not self.patient_moves) or (len(self.patient_moves) == 0):
+                                            self.patient_moves[p.id] = {'x': float(start_pos[0]), 'y': float(start_pos[1]), 'tx': float(tx), 'ty': float(ty), 'speed': 25.0}
+                                     # Queue a nurse to run to this target (visual parity with Retro)
+                                    avail = [n for n in self.env.game.nurses if n.available]
+                                    if avail and (not getattr(self, "pending_assignments", None) or len(self.pending_assignments) == 0):
+                                        # ensure nurse positions present
+                                        for n in avail:
+                                            if n not in self.nurse_positions:
+                                                self.nurse_positions[n] = self.nurse_stations.get(n, (850, self.bed_area_y + 50))
+                                        def dist2(n):
+                                            nx, ny = self.nurse_positions.get(n, (tx, ty))
+                                            dx = nx - tx; dy = ny - ty
+                                            return dx*dx + dy*dy
+                                        nearest = min(avail, key=dist2)
+                                        # Use the nurse the environment actually assigned (if any)
+                                        hold_nurse = getattr(p, 'assigned_nurse', None)
+                                        # Temporarily detach the nurse so healing waits until arrival
+                                        if hold_nurse is not None:
+                                            p.assigned_nurse = None
+                                            # keep nurse busy (available False) so counters remain consistent
+                                        task = {'nurse': nearest, 'patient': p}
+                                        if target_bed is not None:
+                                            task['bed'] = target_bed
+                                        if target_vent is not None:
+                                            task['vent'] = target_vent
+                                        self.pending_assignments.append(task)
+                                        # Defer the engine assignment until nurse arrives
+                                        self.deferred_action = np.array([pid, at], dtype=np.int64)
+                                        self._push_reco("Deferred: waiting for nurse arrival to apply assignment")
                     except Exception:
                         pass
                     done = terminated or truncated
-                    
-                    if done:
-                        # Show final score
-                        score = self.env.game.get_score()
-                        print(f"\nEpisode {self.episode} Complete!")
-                        print(f"  Saved: {score['patients_saved']}")
-                        print(f"  Lost: {score['patients_lost']}")
-                        total = score['patients_saved'] + score['patients_lost']
-                        if total > 0:
-                            print(f"  Success Rate: {(score['patients_saved'] / total * 100):.1f}%")
-                        
-                        # Auto-reset after a short delay
-                        import time
-                        time.sleep(2)
-                        self.obs, self.info = self.env.reset()
-                        self.episode += 1
-                        done = False
-                        break
-            
+ 
+            # Update nurse animations each frame
+            self._update_nurse_positions(size=self.nurse_size)
             self.draw()
             # EMR overlay after drawing
             self._draw_emr_overlay()
@@ -519,6 +747,123 @@ class ModernSimICU:
         
         pygame.quit()
         sys.exit()
+
+    # --- Nurse animation helpers (parity with Retro) ---
+    def _row_corridor_y(self):
+        # Midline of the bed area as a simple corridor
+        return self.bed_area_y + 50
+
+    def _plan_path(self, start, target, use_corridor=True):
+        cx, cy = start
+        tx, ty = target
+        if not use_corridor:
+            return [(tx, ty)]
+        corridor_y = self._row_corridor_y()
+        path = []
+        if abs(cy - corridor_y) > 2:
+            path.append((cx, corridor_y))
+        if abs(tx - cx) > 2:
+            path.append((tx, corridor_y))
+        if abs(ty - corridor_y) > 2:
+            path.append((tx, ty))
+        return path
+
+    def _get_nurse_target(self, nurse, size=None):
+        # If there is a pending assignment for this nurse, go to that resource tile
+        for task in self.pending_assignments:
+            if task.get('nurse') == nurse:
+                if 'bed' in task and task['bed'] in self.bed_positions:
+                    bx, by, bw, bh = self.bed_positions[task['bed']]
+                    return bx + bw - (size or self.nurse_size), by
+                if 'vent' in task and task['vent'] in self.vent_positions:
+                    vx, vy, vw, vh = self.vent_positions[task['vent']]
+                    return vx + vw - (size or self.nurse_size), vy
+        # Otherwise go to station
+        return self.nurse_stations.get(nurse, (850, self.bed_area_y + 50))
+
+    def _update_nurse_positions(self, size=None):
+        if size is None:
+            size = self.nurse_size
+        for nurse in self.env.game.nurses:
+            target_x, target_y = self._get_nurse_target(nurse, size=size)
+            if nurse not in self.nurse_positions:
+                self.nurse_positions[nurse] = self.nurse_stations.get(nurse, (850, self.bed_area_y + 50))
+                self.nurse_paths[nurse] = []
+                continue
+            cur_x, cur_y = self.nurse_positions[nurse]
+            # Idle if no pending assignment
+            has_pending = any(t.get('nurse') == nurse for t in self.pending_assignments)
+            is_idle = not has_pending
+            use_corridor = not is_idle
+            if is_idle:
+                target_x, target_y = self.nurse_stations.get(nurse, (850, self.bed_area_y + 50))
+                if abs(cur_x - target_x) <= 1 and abs(cur_y - target_y) <= 1:
+                    self.nurse_positions[nurse] = (target_x, target_y)
+                    self.nurse_paths[nurse] = []
+                    continue
+            dx_t = target_x - cur_x
+            dy_t = target_y - cur_y
+            dist_to_target = (dx_t * dx_t + dy_t * dy_t) ** 0.5
+            if dist_to_target <= 2:
+                self.nurse_positions[nurse] = (target_x, target_y)
+                self.nurse_paths[nurse] = []
+                continue
+            if dist_to_target <= 20:
+                use_corridor = False
+            if nurse not in self.nurse_paths:
+                self.nurse_paths[nurse] = []
+            if (not self.nurse_paths[nurse]
+                or (abs(self.nurse_paths[nurse][-1][0] - target_x) > 3 and abs(self.nurse_paths[nurse][-1][1] - target_y) > 3)):
+                self.nurse_paths[nurse] = self._plan_path((cur_x, cur_y), (target_x, target_y), use_corridor=use_corridor)
+            # Advance toward next waypoint
+            if self.nurse_paths[nurse]:
+                wx, wy = self.nurse_paths[nurse][0]
+            else:
+                wx, wy = target_x, target_y
+            dx = wx - cur_x
+            dy = wy - cur_y
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist < 1:
+                if self.nurse_paths[nurse]:
+                    self.nurse_paths[nurse].pop(0)
+                if not self.nurse_paths[nurse] and dist_to_target <= 2:
+                    self.nurse_positions[nurse] = (target_x, target_y)
+                    continue
+                self.nurse_positions[nurse] = (wx, wy)
+                continue
+            step = min(self.nurse_speed, dist)
+            if dist > 0:
+                new_x = cur_x + dx / dist * step
+                new_y = cur_y + dy / dist * step
+            else:
+                new_x, new_y = wx, wy
+            self.nurse_positions[nurse] = (new_x, new_y)
+
+        # Complete pending tasks when nurse reaches target tile (trigger deferred engine assignment)
+        if self.pending_assignments:
+            remaining = []
+            for task in self.pending_assignments:
+                nurse = task['nurse']
+                nx, ny = self.nurse_positions.get(nurse, (None, None))
+                if nx is None:
+                    remaining.append(task)
+                    continue
+                if 'bed' in task and task['bed'] in self.bed_positions:
+                    bx, by, bw, bh = self.bed_positions[task['bed']]
+                    reached_rect = (bx - 4) <= nx <= (bx + bw + 4) and (by - 4) <= ny <= (by + bh + 4)
+                    if not reached_rect:
+                        remaining.append(task)
+                        continue
+                if 'vent' in task and task['vent'] in self.vent_positions:
+                    vx, vy, vw, vh = self.vent_positions[task['vent']]
+                    reached_rect = (vx - 4) <= nx <= (vx + vw + 4) and (vy - 4) <= ny <= (vy + vh + 4)
+                    if not reached_rect:
+                        remaining.append(task)
+                        continue
+                # reached -> apply deferred assignment at next loop iteration
+                self.ready_to_apply_deferred = True
+                # nurse will head back to station automatically when idle
+            self.pending_assignments = remaining
 
 
 if __name__ == "__main__":

@@ -28,10 +28,10 @@ def train_agent(total_timesteps=100000, save_path="models/sim_icu_ai_agent"):
     
     print("\n1. Creating environment...")
     # Vectorized training environment (4 parallel envs) with curriculum: easy first (arrival 0.05)
-    env = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.05)), n_envs=4)
+    env = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.03)), n_envs=4)
  
     # Create evaluation environment (harder arrival rate to measure true performance)
-    eval_env = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.10)), n_envs=1)
+    eval_env = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.08)), n_envs=1)
     
     # Create the AI agent using PPO (Proximal Policy Optimization)
     print("2. Creating PPO agent...")
@@ -39,14 +39,14 @@ def train_agent(total_timesteps=100000, save_path="models/sim_icu_ai_agent"):
         "MlpPolicy",  # Multi-layer perceptron policy (standard neural network)
         env,
         verbose=1,  # Print training progress
-        learning_rate=3e-4,  # Learning rate
-        n_steps=4096,  # Steps per update (per env)
-        batch_size=256,  # Batch size for training
+        learning_rate=2.5e-4,  # Learning rate
+        n_steps=2048,  # Steps per update (per env)
+        batch_size=512,  # Batch size for training
         n_epochs=10,  # Number of epochs per update
-        gamma=0.995,  # Discount factor
+        gamma=0.99,  # Discount factor
         gae_lambda=0.95,  # GAE lambda parameter
         clip_range=0.2,  # PPO clip range
-        ent_coef=0.02,  # Stronger exploration
+        ent_coef=0.01,  # Balanced exploration
         vf_coef=0.5,  # Value function coefficient
         max_grad_norm=0.5,  # Gradient clipping
         tensorboard_log="./logs/",  # TensorBoard logging
@@ -62,7 +62,7 @@ def train_agent(total_timesteps=100000, save_path="models/sim_icu_ai_agent"):
         log_path="./logs/eval/",
         eval_freq=5000,  # Evaluate every 5000 steps
         deterministic=True,
-        render=True
+        render=False
     )
     
     # Checkpoint callback (saves model periodically)
@@ -87,7 +87,7 @@ def train_agent(total_timesteps=100000, save_path="models/sim_icu_ai_agent"):
         use_progress_bar = False
     
     # Curriculum: first stage on easier arrivals, then harder
-    stage1 = max(50000, int(total_timesteps * 0.33))
+    stage1 = max(80000, int(total_timesteps * 0.5))
     stage2 = max(0, total_timesteps - stage1)
 
     model.learn(
@@ -131,22 +131,29 @@ def test_agent(model, num_episodes=5):
     
     for episode in range(num_episodes):
         # Use a fresh single environment for evaluation
-        eval_env = Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None))
+        eval_env = Monitor(SimICUEnv(max_patients=10, max_ticks=1000, render_mode=None))
         obs, info = eval_env.reset()
         done = False
         episode_saved = 0
         episode_lost = 0
+        last_info = {}
         
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, info = eval_env.step(action)
             done = terminated or truncated
-            
+            last_info = info or last_info
+            # Track running maxima (env returns cumulative totals)
             if info.get('patients_saved', 0) > episode_saved:
                 episode_saved = info['patients_saved']
             if info.get('patients_lost', 0) > episode_lost:
                 episode_lost = info['patients_lost']
         
+        # Fallback to final info snapshot if loop ended early without updates
+        if episode_saved == 0 and episode_lost == 0 and last_info:
+            episode_saved = last_info.get('patients_saved', 0)
+            episode_lost = last_info.get('patients_lost', 0)
+
         total_saved += episode_saved
         total_lost += episode_lost
         

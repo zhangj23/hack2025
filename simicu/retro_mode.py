@@ -150,6 +150,7 @@ class RetroSimICU:
         self.patient_moves = {}  # patient -> {'x','y','tx','ty','speed'}
         self.reserved_beds = set()  # set of Bed reserved awaiting nurse arrival
         self.reserved_bed_to_patient = {}  # Bed -> Patient
+        self.patients_waiting_at_target = {} # patient -> (x, y) standing marker
         
         # UI layout
         self.waiting_room_y = 50
@@ -551,13 +552,10 @@ class RetroSimICU:
                                     self.game.assign_patient_to_bed(patient)
                             except Exception:
                                 self.game.assign_patient_to_bed(patient)
-                            # Clear reservation and walking state upon actual assignment
-                            if bed in getattr(self, "reserved_beds", set()):
-                                self.reserved_beds.discard(bed)
-                            if hasattr(self, "reserved_bed_to_patient"):
-                                self.reserved_bed_to_patient.pop(bed, None)
-                            if hasattr(self, "patient_moves"):
-                                self.patient_moves.pop(patient, None)
+                            # Clear standing-at-target placeholder now that assignment finalized
+                            if hasattr(self, "patients_waiting_at_target") and patient in self.patients_waiting_at_target:
+                                self.patients_waiting_at_target.pop(patient, None)
+                            # Do not clear walking/reservation here (walking cleared on arrival)
                             continue  # completed
                     remaining.append(task)
                     continue
@@ -569,12 +567,15 @@ class RetroSimICU:
                         reached_rect = (vx - 4) <= nx <= (vx + vw + 4) and (vy - 4) <= ny <= (vy + vh + 4)
                         if reached_rect:
                             try:
-                                self.game.assign_patient_to_ventilator(patient)
+                                if hasattr(self.game, "assign_patient_to_specific_ventilator"):
+                                    self.game.assign_patient_to_specific_ventilator(patient, vent, nurse)
+                                else:
+                                    self.game.assign_patient_to_ventilator(patient)
                             except Exception:
                                 self.game.assign_patient_to_ventilator(patient)
-                            # Stop rendering the walking patient once nurse attends at the vent
-                            if hasattr(self, "patient_moves"):
-                                self.patient_moves.pop(patient, None)
+                            # Clear standing-at-target placeholder now that assignment finalized
+                            if hasattr(self, "patients_waiting_at_target") and patient in self.patients_waiting_at_target:
+                                self.patients_waiting_at_target.pop(patient, None)
                             continue  # completed
                     remaining.append(task)
                     continue
@@ -586,16 +587,7 @@ class RetroSimICU:
             return
         finished = []
         for patient, move in list(self.patient_moves.items()):
-            # If patient has been assigned to a bed or ventilator, stop drawing walking sprite
-            if getattr(patient, "assigned_bed", None) is not None or getattr(patient, "assigned_ventilator", None) is not None:
-                self.patient_moves.pop(patient, None)
-                # also clear any bed reservation tied to this patient
-                for b, p in list(getattr(self, "reserved_bed_to_patient", {}).items()):
-                    if p is patient:
-                        self.reserved_bed_to_patient.pop(b, None)
-                        if hasattr(self, "reserved_beds"):
-                            self.reserved_beds.discard(b)
-                continue
+            # Keep walking even after assignment; only clear on arrival at target
             cx, cy = move['x'], move['y']
             tx, ty = move['tx'], move['ty']
             dx, dy = tx - cx, ty - cy
@@ -603,14 +595,25 @@ class RetroSimICU:
             if dist < 1.0:
                 # Arrived at bed tile; mark as visually present (reservation already set)
                 move['x'], move['y'] = float(tx), float(ty)
+                # Keep a standing placeholder at target until nurse assignment finalizes
+                try:
+                    self.patients_waiting_at_target[patient] = (float(tx), float(ty))
+                except Exception:
+                    pass
                 finished.append(patient)
                 continue
             step = min(move['speed'], dist)
             if dist > 0:
                 move['x'] = cx + dx / dist * step
                 move['y'] = cy + dy / dist * step
-        # Keep moves until nurse assigns; we only remove when nurse assignment completes
-        # (no removal here)
+        # Clear finished moves and keep standing markers
+        for p in finished:
+            self.patient_moves.pop(p, None)
+            for b, pf in list(getattr(self, "reserved_bed_to_patient", {}).items()):
+                if pf is p:
+                    self.reserved_bed_to_patient.pop(b, None)
+                    if hasattr(self, "reserved_beds"):
+                        self.reserved_beds.discard(b)
     
     def draw_ventilator(self, vent, x, y, width=120, height=120):
         """Draw a ventilator bed. If occupied, show vent_patient sprite; else vent_bed sprite.
@@ -729,8 +732,6 @@ class RetroSimICU:
     
     def handle_click(self, pos):
         """Handle mouse click"""
-        if self.input_cooldown_ticks > 0:
-            return
         x, y = pos
         
         # Check if clicking in waiting room
@@ -743,6 +744,9 @@ class RetroSimICU:
                     patient_y <= y <= patient_y + 80):
                     self.selected_patient = patient
                     return
+        # If we are rate-limited, do not process bed/vent clicks
+        if self.input_cooldown_ticks > 0:
+            return
         
         # Check if clicking on beds
         if y >= self.bed_area_y and y <= self.bed_area_y + self.bed_area_height:
@@ -788,7 +792,7 @@ class RetroSimICU:
                             'y': float(start_y),
                             'tx': bx + 10,
                             'ty': by - 20,
-                            'speed': 25.0
+                            'speed': 40.0
                         }
                         # Reserve bed
                         self.reserved_beds.add(bed)
@@ -833,7 +837,7 @@ class RetroSimICU:
                             'y': float(start_y),
                             'tx': vent_x + 10,
                             'ty': vent_y - 20,
-                            'speed': 25.0
+                            'speed': 40.0
                         }
                         self.input_cooldown_ticks = 6
                         self.selected_patient = None
@@ -894,7 +898,8 @@ class RetroSimICU:
             if not getattr(self, "patient_in_bed_sprite_raw", None):
                 for patient in self.game.patients:
                     if patient.assigned_bed == bed:
-                        self.draw_patient(patient, bed_x + 10, bed_y - 20, 100, 60)
+                        # Render a slightly narrower patient sprite when in a non-vent bed
+                        self.draw_patient(patient, bed_x + 20, bed_y - 20, 80, 60)
         
         # Draw ventilators (moved to the left side)
         vent_title = self.font.render("VENTILATORS", self.retro_antialias, WHITE)
@@ -910,23 +915,26 @@ class RetroSimICU:
                 for patient in self.game.patients:
                     if patient.assigned_ventilator == vent and patient.status == PatientStatus.ON_VENTILATOR:
                         self.draw_patient(patient, vent_x + 10, vent_y - 20, 100, 60)
-        
-        # Draw moving patients (walking from waiting room to reserved bed) - bar only
+ 
+        # Draw moving patients (walking to assigned bed/vent) using bar-only mode (no box/labels)
         if self.patient_moves:
             for patient, move in list(self.patient_moves.items()):
-                # If patient is no longer active (cured/lost), stop rendering movement
-                if patient.status in [PatientStatus.CURED, PatientStatus.LOST]:
-                    self.patient_moves.pop(patient, None)
-                    continue
                 self.draw_patient(
                     patient,
                     int(move['x']),
                     int(move['y']),
-                    width=100,
-                    height=80,
-                    minimal=False,
+                    width=140,
+                    height=110,
                     bar_only=True
                 )
+
+        # Draw standing placeholders at targets (waiting for nurse)
+        if getattr(self, "patients_waiting_at_target", None):
+            for patient, (px, py) in list(self.patients_waiting_at_target.items()):
+                # If patient got assigned (bed/vent) and is no longer waiting, keep hidden
+                # Otherwise render a standing sprite + bar at target location
+                if patient.status == PatientStatus.WAITING:
+                    self.draw_patient(patient, int(px), int(py), width=100, height=80, bar_only=True)
 
         # Draw nurses (animated between station and patient)
         nurse_title = self.font.render("NURSES", self.retro_antialias, WHITE)

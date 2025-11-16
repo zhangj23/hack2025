@@ -153,9 +153,11 @@ class SimICUEnv(gym.Env):
         if action_type == 0 and self.game.free_beds == 0:
             step_penalty -= 2.0
             resource_available = False
-        elif action_type == 1 and self.game.free_vents == 0:
-            step_penalty -= 2.0
-            resource_available = False
+        elif action_type == 1:
+            # Vent requires both a free ventilator and a free nurse (attending)
+            if self.game.free_vents == 0 or self.game.free_nurses == 0:
+                step_penalty -= 2.0
+                resource_available = False
 
         # --- 2. APPLY ACTION IF VALID ---
         action_applied = False
@@ -166,13 +168,19 @@ class SimICUEnv(gym.Env):
             # Soft action masking: remap invalid action to best valid one
             waiting_patients = [p for p in self.game.patients if p.status == PatientStatus.WAITING]
             waiting_patients.sort(key=lambda p: p.severity, reverse=True)
-            if action_type == 1 and self.game.free_vents > 0 and waiting_patients:
-                # Try ventilator for the most critical waiting patient
-                target = waiting_patients[0]
-                action_applied = bool(self.game.perform_action(target.id, 1))
-                # Reduce penalty if we remapped to useful action
-                if action_applied:
-                    step_penalty = min(step_penalty, 0.0)
+            if action_type == 1:
+                if self.game.free_vents > 0 and self.game.free_nurses > 0 and waiting_patients:
+                    # Try ventilator for the most critical waiting patient
+                    target = waiting_patients[0]
+                    action_applied = bool(self.game.perform_action(target.id, 1))
+                    if action_applied:
+                        step_penalty = min(step_penalty, 0.0)
+                elif self.game.free_beds > 0 and self.game.free_nurses > 0 and waiting_patients:
+                    # Fallback to bed if vents/nurses unavailable
+                    target = waiting_patients[0]
+                    action_applied = bool(self.game.perform_action(target.id, 0))
+                    if action_applied:
+                        step_penalty = min(step_penalty, 0.0)
             elif action_type == 0 and self.game.free_beds > 0 and self.game.free_nurses > 0 and waiting_patients:
                 # Try bed for the most critical waiting patient
                 target = waiting_patients[0]
@@ -195,7 +203,7 @@ class SimICUEnv(gym.Env):
         # Reward reduction in total severity across all patients
         new_total_severity = sum(p.severity for p in self.game.patients)
         delta_severity = prev_total_severity - new_total_severity
-        reward += 0.2 * delta_severity  # positive if severity decreased
+        reward += 0.5 * delta_severity  # positive if severity decreased
 
         # Small penalty when treatment setup delay is incurred (switching/upgrading introduces lag)
         if self.game.just_incurred_setup_delay:
@@ -237,7 +245,7 @@ class SimICUEnv(gym.Env):
         if self.game.just_saved_a_patient:
             reward += 100.0
         if self.game.just_lost_a_patient:
-            reward -= 150.0  # slightly stronger penalty to discourage losses
+            reward -= 100.0
 
         # Dense shaping rewards per step (tuned)
         waiting = self.game.total_waiting_patients
@@ -245,10 +253,10 @@ class SimICUEnv(gym.Env):
         pending = len([p for p in self.game.patients if p.status == PatientStatus.PENDING_DISCHARGE])
 
         # Encourage treatment
-        reward += 0.5 * treated
+        reward += 0.8 * treated
 
         # Stronger penalty for patients waiting
-        reward -= 0.2 * waiting
+        reward -= 0.15 * waiting
 
         # Mild penalty for ICU gridlock (patients pending discharge blocking beds)
         reward -= 0.1 * pending
