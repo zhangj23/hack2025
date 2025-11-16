@@ -119,6 +119,15 @@ class ModernSimICU:
         except Exception:
             self.floor_bg_raw = None
         self._floor_bg_cache = {}
+
+        # Divider sprite (for ventilators)
+        divider_path = os.path.join(base_dir, "sprites", "divider.png")
+        try:
+            self.divider_sprite_raw = pygame.image.load(divider_path).convert_alpha()
+        except Exception:
+            self.divider_sprite_raw = None
+        self._divider_cache_by_height = {}
+        self.divider_width_scale = 1.25
     
     def draw_patient(self, patient, x, y, width=100, height=80, minimal=False):
         """Draw a patient icon (sprite if available).
@@ -250,6 +259,17 @@ class ModernSimICU:
         label_text = self.small_font.render(label, True, BLACK if vent.available else WHITE)
         text_rect = label_text.get_rect(center=(x + width // 2, y + height // 2))
         self.screen.blit(label_text, text_rect)
+
+        # Divider to the right
+        if self.divider_sprite_raw:
+            h = height
+            if h not in self._divider_cache_by_height:
+                base_w = self.divider_sprite_raw.get_width()
+                base_h = self.divider_sprite_raw.get_height()
+                sw = int(base_w * (h / base_h) * self.divider_width_scale)
+                self._divider_cache_by_height[h] = pygame.transform.smoothscale(self.divider_sprite_raw, (max(1, sw), h))
+            pad = 16
+            self.screen.blit(self._divider_cache_by_height[h], (x + width + pad, y))
     
     def draw_ui_panel(self):
         """Draw the UI information panel"""

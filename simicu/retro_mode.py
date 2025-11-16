@@ -118,6 +118,16 @@ class RetroSimICU:
             self.floor_bg_raw = None
         self._floor_bg_cache = {}
 
+        # Divider sprite (privacy curtain) to draw near ventilators
+        divider_path = os.path.join(base_dir, "sprites", "divider.png")
+        try:
+            self.divider_sprite_raw = pygame.image.load(divider_path).convert_alpha()
+        except Exception:
+            self.divider_sprite_raw = None
+        self._divider_cache_by_height = {}
+        # Make dividers slightly wider
+        self.divider_width_scale = 1.25
+
         # Object position maps for animation targets
         self.bed_positions = {}   # bed -> (x, y, w, h)
         self.vent_positions = {}  # vent -> (x, y, w, h)
@@ -544,6 +554,19 @@ class RetroSimICU:
         self.screen.blit(label_text, text_rect)
         # Record for nurse animation targeting
         self.vent_positions[vent] = (x, y, width, height)
+
+        # Draw divider to the right of each ventilator if sprite available
+        if self.divider_sprite_raw:
+            h = height
+            if h not in self._divider_cache_by_height:
+                base_w = self.divider_sprite_raw.get_width()
+                base_h = self.divider_sprite_raw.get_height()
+                sw = int(base_w * (h / base_h) * self.divider_width_scale)
+                self._divider_cache_by_height[h] = pygame.transform.smoothscale(self.divider_sprite_raw, (max(1, sw), h))
+            divider_surf = self._divider_cache_by_height[h]
+            # Place divider between ventilators and beds
+            pad = 16
+            self.screen.blit(divider_surf, (x + width + pad, y))
     
     def draw_ui_panel(self):
         """Draw the UI information panel"""
