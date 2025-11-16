@@ -343,13 +343,19 @@ class RetroSimICU:
         # Row 0 top is self.bed_area_y + 50, row 1 top is +120
         return self.bed_area_y + 50 + 120 + 10  # 10px gap between rows
 
-    def _plan_path(self, cur, target):
+    def _plan_path(self, cur, target, use_corridor=True):
         """
         Plan a simple 2-turn Manhattan path using a safe corridor between rows.
+        If use_corridor is False, return direct target-only waypoint to avoid oscillation.
         cur, target: (x, y)
         """
         cx, cy = cur
         tx, ty = target
+        if not use_corridor:
+            # Direct path: just aim at the target
+            if abs(tx - cx) <= 1 and abs(ty - cy) <= 1:
+                return []
+            return [(tx, ty)]
         corridor_y = self._row_corridor_y()
         path = []
         # Move vertically to corridor first if not already near it
@@ -371,16 +377,49 @@ class RetroSimICU:
             target_x, target_y = self._get_nurse_target(nurse, size=size)
             # Initialize position at station if unknown
             if nurse not in self.nurse_positions:
-                self.nurse_positions[nurse] = (target_x, target_y)
+                # Start idle nurses at their station
+                station_pos = self.nurse_stations.get(nurse, (850, self.bed_area_y + 50))
+                self.nurse_positions[nurse] = station_pos
                 self.nurse_paths[nurse] = []
                 continue
             cur_x, cur_y = self.nurse_positions[nurse]
 
+            # Determine if nurse is idle (no pending task and not assigned)
+            has_pending = any(t.get('nurse') == nurse for t in self.pending_assignments)
+            is_assigned = any(p.assigned_nurse == nurse for p in self.game.patients)
+            is_idle = (not has_pending) and (not is_assigned)
+            # If idle, target should be station and avoid corridor to prevent oscillation
+            use_corridor = not is_idle
+            if is_idle:
+                target_x, target_y = self.nurse_stations.get(nurse, (850, self.bed_area_y + 50))
+                # Snap to station if already very close
+                if abs(cur_x - target_x) <= 1 and abs(cur_y - target_y) <= 1:
+                    self.nurse_positions[nurse] = (target_x, target_y)
+                    self.nurse_paths[nurse] = []
+                    continue
+
+            # Hysteresis near final targets to avoid oscillation:
+            # When within a small radius, avoid corridor routing and snap to target.
+            dx_t = target_x - cur_x
+            dy_t = target_y - cur_y
+            dist_to_target = (dx_t * dx_t + dy_t * dy_t) ** 0.5
+            if dist_to_target <= 2:
+                # Snap to exact target and clear path
+                self.nurse_positions[nurse] = (target_x, target_y)
+                self.nurse_paths[nurse] = []
+                continue
+            # If close to final, don't use corridor (go direct)
+            if dist_to_target <= 20:
+                use_corridor = False
+
             # Recompute path if target changed significantly or path empty
             if nurse not in self.nurse_paths:
                 self.nurse_paths[nurse] = []
-            if not self.nurse_paths[nurse] or self.nurse_paths[nurse][-1] != (target_x, target_y):
-                self.nurse_paths[nurse] = self._plan_path((cur_x, cur_y), (target_x, target_y))
+            # Only rebuild if last waypoint is far from the target to reduce re-path jitter
+            if (not self.nurse_paths[nurse]
+                or (abs(self.nurse_paths[nurse][-1][0] - target_x) > 3
+                    and abs(self.nurse_paths[nurse][-1][1] - target_y) > 3)):
+                self.nurse_paths[nurse] = self._plan_path((cur_x, cur_y), (target_x, target_y), use_corridor=use_corridor)
 
             # Advance toward next waypoint
             if self.nurse_paths[nurse]:
@@ -395,6 +434,10 @@ class RetroSimICU:
                 # Reached waypoint
                 if self.nurse_paths[nurse]:
                     self.nurse_paths[nurse].pop(0)
+                # If next waypoint is final target and we are close, snap to it
+                if not self.nurse_paths[nurse] and dist_to_target <= 2:
+                    self.nurse_positions[nurse] = (target_x, target_y)
+                    continue
                 self.nurse_positions[nurse] = (wx, wy)
                 continue
             step = min(self.nurse_speed, dist)
