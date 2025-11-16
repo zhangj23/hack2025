@@ -73,8 +73,8 @@ class RetroSimICU:
             self.nurse_sprite_raw = None
         self._nurse_sprite_cache = {}
 
-        # Patient sprite (standing)
-        standing_path = os.path.join(base_dir, "sprites", "standing.png")
+        # Patient sprite (standing/selected) -> raised hand variant
+        standing_path = os.path.join(base_dir, "sprites", "raised_hand.png")
         try:
             self.patient_sprite_raw = pygame.image.load(standing_path).convert_alpha()
         except Exception:

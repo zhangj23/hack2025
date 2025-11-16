@@ -73,9 +73,9 @@ class ModernSimICU:
         self.max_log_lines = 10
         self.show_emr = False
 
-        # Patient sprite (standing)
+        # Patient sprite (standing/selected) -> raised hand variant
         base_dir = os.path.dirname(__file__)
-        standing_path = os.path.join(base_dir, "sprites", "standing.png")
+        standing_path = os.path.join(base_dir, "sprites", "raised_hand.png")
         try:
             self.patient_sprite_raw = pygame.image.load(standing_path).convert_alpha()
         except Exception:
