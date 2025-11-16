@@ -23,6 +23,7 @@ LIGHT_GRAY = (192, 192, 192)
 ORANGE = (255, 165, 0)
 DARK_RED = (139, 0, 0)
 DARK_GREEN = (0, 100, 0)
+DARK_PINK = (199, 21, 133)
 
 
 class RetroSimICU:
@@ -35,11 +36,25 @@ class RetroSimICU:
         self.screen = pygame.display.set_mode((self.width, self.height))
         pygame.display.set_caption("SimICU - Retro Mode")
         self.clock = pygame.time.Clock()
-        # Retro-styled fonts (bigger, crisp). Using pygame bundled font as fallback.
-        try:
-            base_font = pygame.font.match_font('freesansbold')
-        except Exception:
-            base_font = None
+        # Retro-styled fonts (Pixelify Sans if available; fallback to bundled)
+        base_dir = os.path.dirname(__file__)
+        pixelify_candidates = [
+            os.path.join(base_dir, "fonts", "PixelifySans-Regular.ttf"),
+            os.path.join(base_dir, "fonts", "PixelifySans.ttf"),
+        ]
+        base_font = None
+        for cand in pixelify_candidates:
+            if os.path.exists(cand):
+                base_font = cand
+                break
+        if base_font:
+            print(f"Using Pixelify Sans font from {base_font}")
+        else:
+            try:
+                base_font = pygame.font.match_font('freesansbold')
+                print("Pixelify Sans not found in simicu/fonts. Falling back to bundled font.")
+            except Exception:
+                base_font = None
         self.retro_antialias = False  # disable AA for a pixel/retro look
         self.small_font = pygame.font.Font(base_font, 22)
         self.font = pygame.font.Font(base_font, 28)
@@ -883,6 +898,8 @@ class RetroSimICU:
             self.screen.fill(BLACK)
         if self.show_intro:
             return self.draw_intro_overlay()
+        if getattr(self, "show_rules", False):
+            return self.draw_rules_overlay()
 
         # Update actor positions first so rendering reflects latest arrivals/assignments
         # (e.g., remove waiting-room sprite the instant a nurse reaches bed/vent)
@@ -985,18 +1002,15 @@ class RetroSimICU:
             self.screen.blit(self._start_bg_cache[key], (0, 0))
         else:
             self.screen.fill(BLACK)
-        title = self.title_font.render("SIMICU - RETRO MODE", self.retro_antialias, YELLOW)
-        subtitle = self.large_font.render("HUMAN VS AI ICU MANAGEMENT", self.retro_antialias, WHITE)
-        self.screen.blit(title, ((self.width - title.get_width()) // 2, 120))
-        self.screen.blit(subtitle, ((self.width - subtitle.get_width()) // 2, 165))
+        # No intro text; background only with buttons
 
         # Spacing anchor for buttons
         y = 220
 
-        btn_w, btn_h = 220, 56
+        btn_w, btn_h = 240, 64
         btn_x = (self.width - btn_w) // 2
-        btn_y = y + 180
-        pygame.draw.rect(self.screen, BLUE, (btn_x, btn_y, btn_w, btn_h), border_radius=6)
+        btn_y = y + 430
+        pygame.draw.rect(self.screen, DARK_PINK, (btn_x, btn_y, btn_w, btn_h), border_radius=6)
         pygame.draw.rect(self.screen, WHITE, (btn_x, btn_y, btn_w, btn_h), 2, border_radius=6)
         btn_text = self.large_font.render("START GAME", self.retro_antialias, WHITE)
         self.screen.blit(btn_text, (btn_x + (btn_w - btn_text.get_width()) // 2,
@@ -1005,7 +1019,7 @@ class RetroSimICU:
 
         # Rules button under start
         r_w, r_h = 220, 48
-        r_x = btn_x
+        r_x = (self.width - r_w) // 2
         r_y = btn_y + btn_h + 16
         pygame.draw.rect(self.screen, DARK_GRAY, (r_x, r_y, r_w, r_h), border_radius=6)
         pygame.draw.rect(self.screen, WHITE, (r_x, r_y, r_w, r_h), 2, border_radius=6)
@@ -1016,13 +1030,8 @@ class RetroSimICU:
         pygame.display.flip()
 
     def draw_rules_overlay(self):
-        if getattr(self, "start_bg_raw", None):
-            key = (self.width, self.height)
-            if key not in self._start_bg_cache:
-                self._start_bg_cache[key] = pygame.transform.smoothscale(self.start_bg_raw, (self.width, self.height))
-            self.screen.blit(self._start_bg_cache[key], (0, 0))
-        else:
-            self.screen.fill(BLACK)
+        # Rules page uses a solid black background for readability
+        self.screen.fill(BLACK)
         title = self.title_font.render("RULES", self.retro_antialias, YELLOW)
         self.screen.blit(title, ((self.width - title.get_width()) // 2, 100))
         lines = [
