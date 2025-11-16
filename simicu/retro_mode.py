@@ -110,6 +110,14 @@ class RetroSimICU:
             self.waiting_bg_raw = None
         self._waiting_bg_cache = {}
 
+        # Global hospital floor background
+        floor_path = os.path.join(base_dir, "sprites", "hospital_floor.png")
+        try:
+            self.floor_bg_raw = pygame.image.load(floor_path).convert()
+        except Exception:
+            self.floor_bg_raw = None
+        self._floor_bg_cache = {}
+
         # Object position maps for animation targets
         self.bed_positions = {}   # bed -> (x, y, w, h)
         self.vent_positions = {}  # vent -> (x, y, w, h)
@@ -118,7 +126,7 @@ class RetroSimICU:
         self.nurse_positions = {}  # nurse -> (x, y)
         self.nurse_stations = {}   # nurse -> (x, y)
         self.nurse_speed = 60      # pixels per tick
-        self.nurse_size = 48       # draw size (bigger nurse)
+        self.nurse_size = 64       # draw size (bigger nurse)
         self.nurse_paths = {}      # nurse -> [(x, y), ...] waypoints
         self.pending_assignments = []  # [{'nurse': Nurse, 'patient': Patient, 'bed': Bed}]
         self.input_cooldown_ticks = 0  # limit human action rate
@@ -706,7 +714,14 @@ class RetroSimICU:
     
     def draw(self):
         """Draw the entire game screen"""
-        self.screen.fill(BLACK)
+        # Draw global background
+        if self.floor_bg_raw:
+            key_bg = (self.width, self.height)
+            if key_bg not in self._floor_bg_cache:
+                self._floor_bg_cache[key_bg] = pygame.transform.smoothscale(self.floor_bg_raw, (self.width, self.height))
+            self.screen.blit(self._floor_bg_cache[key_bg], (0, 0))
+        else:
+            self.screen.fill(BLACK)
         if self.show_intro:
             return self.draw_intro_overlay()
         

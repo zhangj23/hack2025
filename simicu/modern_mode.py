@@ -73,6 +73,9 @@ class ModernSimICU:
         self.max_log_lines = 10
         self.show_emr = False
 
+        # Nurse render size
+        self.nurse_size = 56
+
         # Patient sprite (standing/selected) -> raised hand variant
         base_dir = os.path.dirname(__file__)
         standing_path = os.path.join(base_dir, "sprites", "raised_hand.png")
@@ -108,6 +111,14 @@ class ModernSimICU:
         except Exception:
             self.waiting_bg_raw = None
         self._waiting_bg_cache = {}
+
+        # Global hospital floor background
+        floor_path = os.path.join(base_dir, "sprites", "hospital_floor.png")
+        try:
+            self.floor_bg_raw = pygame.image.load(floor_path).convert()
+        except Exception:
+            self.floor_bg_raw = None
+        self._floor_bg_cache = {}
     
     def draw_patient(self, patient, x, y, width=100, height=80, minimal=False):
         """Draw a patient icon (sprite if available).
@@ -334,7 +345,13 @@ class ModernSimICU:
     
     def draw(self):
         """Draw the entire game screen"""
-        self.screen.fill(BLACK)
+        if self.floor_bg_raw:
+            key_bg = (self.width, self.height)
+            if key_bg not in self._floor_bg_cache:
+                self._floor_bg_cache[key_bg] = pygame.transform.smoothscale(self.floor_bg_raw, (self.width, self.height))
+            self.screen.blit(self._floor_bg_cache[key_bg], (0, 0))
+        else:
+            self.screen.fill(BLACK)
         
         # Draw waiting room
         waiting_title = self.font.render("WAITING ROOM", True, WHITE)
@@ -387,7 +404,7 @@ class ModernSimICU:
         nurse_title = self.font.render("NURSES", True, WHITE)
         self.screen.blit(nurse_title, (850, self.bed_area_y - 30))
         for i, nurse in enumerate(self.env.game.nurses):
-            self.draw_nurse(nurse, 850, self.bed_area_y + 50 + i * 50, 40)
+            self.draw_nurse(nurse, 850, self.bed_area_y + 50 + i * 56, self.nurse_size)
         
         # Draw UI panel
         self.draw_ui_panel()
