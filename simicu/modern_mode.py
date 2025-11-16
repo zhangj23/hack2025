@@ -449,7 +449,6 @@ class ModernSimICU:
             "CONTROLS:",
             "SPACE: Pause/Resume",
             "R: Reset episode",
-            "+/-: Speed up/down",
             "E: Toggle EMR mockup",
             "ESC: Quit"
         ]
