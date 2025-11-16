@@ -92,6 +92,22 @@ class ModernSimICU:
         self.patient_in_bed_scale = 1.2
         self.waiting_sprite_scale_w = 1.3
         self.waiting_sprite_scale_h = 1.6
+
+        # Sitting sprite for waiting room (AI mode always shows sitting)
+        sitting_path = os.path.join(base_dir, "sprites", "sitting.png")
+        try:
+            self.sitting_sprite_raw = pygame.image.load(sitting_path).convert_alpha()
+        except Exception:
+            self.sitting_sprite_raw = None
+        self._sitting_sprite_cache = {}
+
+        # Waiting room background
+        wr_path = os.path.join(base_dir, "sprites", "waiting_room.png")
+        try:
+            self.waiting_bg_raw = pygame.image.load(wr_path).convert_alpha()
+        except Exception:
+            self.waiting_bg_raw = None
+        self._waiting_bg_cache = {}
     
     def draw_patient(self, patient, x, y, width=100, height=80, minimal=False):
         """Draw a patient icon (sprite if available).
@@ -99,7 +115,16 @@ class ModernSimICU:
         """
         if minimal:
             # Waiting room: show standing sprite (if available) + life bar + number only.
-            if getattr(self, "patient_sprite_raw", None):
+            # AI mode: show sitting sprite in waiting room if available
+            sprite = None
+            if getattr(self, "sitting_sprite_raw", None):
+                tw = max(1, int(width * self.waiting_sprite_scale_w))
+                th = max(1, int(height * self.waiting_sprite_scale_h))
+                key = (tw, th, "waiting_sit")
+                if key not in self._sitting_sprite_cache:
+                    self._sitting_sprite_cache[key] = pygame.transform.smoothscale(self.sitting_sprite_raw, (tw, th))
+                sprite = self._sitting_sprite_cache[key]
+            elif getattr(self, "patient_sprite_raw", None):
                 tw = max(1, int(width * self.waiting_sprite_scale_w))
                 th = max(1, int(height * self.waiting_sprite_scale_h))
                 key = (tw, th, "waiting")
@@ -302,10 +327,15 @@ class ModernSimICU:
         # Draw waiting room
         waiting_title = self.font.render("WAITING ROOM", True, WHITE)
         self.screen.blit(waiting_title, (50, 20))
-        pygame.draw.rect(self.screen, DARK_GRAY, 
-                        (50, self.waiting_room_y, 800, self.waiting_room_height))
-        pygame.draw.rect(self.screen, WHITE, 
-                        (50, self.waiting_room_y, 800, self.waiting_room_height), 2)
+        wr_x, wr_y, wr_w, wr_h = 50, self.waiting_room_y, 800, self.waiting_room_height
+        if self.waiting_bg_raw:
+            key = (wr_w, wr_h)
+            if key not in self._waiting_bg_cache:
+                self._waiting_bg_cache[key] = pygame.transform.smoothscale(self.waiting_bg_raw, (wr_w, wr_h))
+            self.screen.blit(self._waiting_bg_cache[key], (wr_x, wr_y))
+        else:
+            pygame.draw.rect(self.screen, DARK_GRAY, (wr_x, wr_y, wr_w, wr_h))
+        pygame.draw.rect(self.screen, WHITE, (wr_x, wr_y, wr_w, wr_h), 2)
         
         # Draw waiting patients
         waiting_patients = self.env.game.get_waiting_patients()
