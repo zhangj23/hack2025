@@ -1,0 +1,20 @@
+# SimICU Requirements
+# Core dependencies for the ICU simulation and reinforcement learning
+
+# Reinforcement Learning
+gymnasium>=0.29.0
+stable-baselines3>=2.0.0
+
+# Game/Visualization
+pygame>=2.5.0
+
+# Scientific Computing
+numpy>=1.24.0
+
+# Progress bar dependencies (required for training progress display)
+tqdm>=4.65.0
+rich>=13.0.0
+
+# Optional: For TensorBoard visualization during training
+tensorboard>=2.13.0
+
