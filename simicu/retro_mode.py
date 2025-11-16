@@ -94,6 +94,22 @@ class RetroSimICU:
         self.waiting_sprite_scale_w = 1.3
         self.waiting_sprite_scale_h = 1.6
 
+        # Sitting sprite for waiting room default
+        sitting_path = os.path.join(base_dir, "sprites", "sitting.png")
+        try:
+            self.sitting_sprite_raw = pygame.image.load(sitting_path).convert_alpha()
+        except Exception:
+            self.sitting_sprite_raw = None
+        self._sitting_sprite_cache = {}
+
+        # Waiting room background
+        wr_path = os.path.join(base_dir, "sprites", "waiting_room.png")
+        try:
+            self.waiting_bg_raw = pygame.image.load(wr_path).convert_alpha()
+        except Exception:
+            self.waiting_bg_raw = None
+        self._waiting_bg_cache = {}
+
         # Object position maps for animation targets
         self.bed_positions = {}   # bed -> (x, y, w, h)
         self.vent_positions = {}  # vent -> (x, y, w, h)
@@ -121,14 +137,25 @@ class RetroSimICU:
         """
         if minimal:
             # Waiting room: show standing sprite (if available) + life bar + number only.
-            if self.patient_sprite_raw:
-                # Scale bigger for visibility in waiting room
+            # Pick which sprite to show: sitting by default, standing when selected
+            sprite_raw = None
+            cache = None
+            if self.selected_patient == patient and self.patient_sprite_raw:
+                sprite_raw = self.patient_sprite_raw
+                cache = self._patient_sprite_cache
+            elif self.sitting_sprite_raw:
+                sprite_raw = self.sitting_sprite_raw
+                cache = self._sitting_sprite_cache
+            elif self.patient_sprite_raw:
+                sprite_raw = self.patient_sprite_raw
+                cache = self._patient_sprite_cache
+            if sprite_raw is not None:
                 tw = max(1, int(width * self.waiting_sprite_scale_w))
                 th = max(1, int(height * self.waiting_sprite_scale_h))
                 key = (tw, th, "waiting")
-                if key not in self._patient_sprite_cache:
-                    self._patient_sprite_cache[key] = pygame.transform.smoothscale(self.patient_sprite_raw, (tw, th))
-                sprite = self._patient_sprite_cache[key]
+                if key not in cache:
+                    cache[key] = pygame.transform.smoothscale(sprite_raw, (tw, th))
+                sprite = cache[key]
                 draw_x = x + (width - tw) // 2
                 draw_y = y + (height - th) // 2
                 self.screen.blit(sprite, (draw_x, draw_y))
@@ -686,10 +713,16 @@ class RetroSimICU:
         # Draw waiting room
         waiting_title = self.font.render("WAITING ROOM", self.retro_antialias, WHITE)
         self.screen.blit(waiting_title, (50, 20))
-        pygame.draw.rect(self.screen, DARK_GRAY, 
-                        (50, self.waiting_room_y, 800, self.waiting_room_height))
-        pygame.draw.rect(self.screen, WHITE, 
-                        (50, self.waiting_room_y, 800, self.waiting_room_height), 2)
+        # Background image for waiting room
+        wr_x, wr_y, wr_w, wr_h = 50, self.waiting_room_y, 800, self.waiting_room_height
+        if self.waiting_bg_raw:
+            key = (wr_w, wr_h)
+            if key not in self._waiting_bg_cache:
+                self._waiting_bg_cache[key] = pygame.transform.smoothscale(self.waiting_bg_raw, (wr_w, wr_h))
+            self.screen.blit(self._waiting_bg_cache[key], (wr_x, wr_y))
+        else:
+            pygame.draw.rect(self.screen, DARK_GRAY, (wr_x, wr_y, wr_w, wr_h))
+        pygame.draw.rect(self.screen, WHITE, (wr_x, wr_y, wr_w, wr_h), 2)
         
         # Draw waiting patients
         waiting_patients = self.game.get_waiting_patients()
