@@ -171,7 +171,9 @@ class SimICU:
          
     def _generate_next_arrival(self) -> int:
         """Generate next patient arrival time using Poisson distribution"""
-        return int(np.random.exponential(1.0 / self.arrival_rate))
+        # Ensure at least 1-tick gap to guarantee arrivals within episodes
+        gap = int(np.random.exponential(1.0 / self.arrival_rate))
+        return max(1, gap)
     
     def reset(self):
         """Reset the simulation to initial state"""
@@ -197,6 +199,11 @@ class SimICU:
             bed.available = True
         for ventilator in self.ventilators:
             ventilator.available = True
+
+        # Seed a small initial cohort so evaluations never run empty
+        initial_patients = random.randint(1, 3)
+        for _ in range(initial_patients):
+            self.add_patient(initial_severity=random.randint(45, 70))
     
     def add_patient(self, initial_severity: Optional[int] = None) -> Patient:
         """Add a new patient to the simulation"""
@@ -313,6 +320,41 @@ class SimICU:
             self._free_nurses -= 1
             return True
         return False
+
+    def assign_patient_to_specific_ventilator(self, patient: Patient, ventilator: Ventilator, nurse: Optional[Nurse] = None) -> bool:
+        """
+        Assign the given patient to a specific ventilator with an attending nurse.
+        This ensures UI-clicked ventilator is honored.
+        """
+        if patient.status not in [PatientStatus.WAITING, PatientStatus.IN_BED, PatientStatus.PENDING_DISCHARGE]:
+            return False
+        if ventilator is None or not ventilator.available:
+            return False
+        if self._free_vents <= 0 or self._free_nurses <= 0:
+            return False
+
+        chosen_nurse = nurse if nurse is not None else self.get_available_nurse()
+        if chosen_nurse is None or not chosen_nurse.available:
+            return False
+
+        # If upgrading from bed to ventilator, mark setup delay for reward shaping
+        if patient.status == PatientStatus.IN_BED:
+            self.just_incurred_setup_delay = True
+            # release bed immediately (nurse will switch to vent)
+            if patient.assigned_bed:
+                patient.assigned_bed.available = True
+                patient.assigned_bed = None
+                self._free_beds += 1
+
+        patient.assigned_ventilator = ventilator
+        patient.assigned_nurse = chosen_nurse
+        ventilator.available = False
+        chosen_nurse.available = False
+        patient.status = PatientStatus.ON_VENTILATOR
+        patient.vent_setup_ticks = 5
+        self._free_vents -= 1
+        self._free_nurses -= 1
+        return True
     
     def perform_action(self, patient_id: int, action_type: int):
         """
@@ -407,6 +449,8 @@ class SimICU:
                 patient._release_resources()
                 self._release_patient_resources_counters(had_bed, had_nurse, had_vent)
                 patient.status = PatientStatus.CURED
+                # Count as saved here (promotion from pending discharge)
+                self.patients_saved += 1
                 self.just_saved_a_patient = True
         
         # Remove cured/lost patients after a delay (optional - for now keep them for stats)
