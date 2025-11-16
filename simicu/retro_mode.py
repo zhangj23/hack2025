@@ -125,6 +125,14 @@ class RetroSimICU:
             self.vent_patient_raw = None
         self._vent_patient_cache = {}
 
+        # Start screen background
+        start_bg_path = os.path.join(base_dir, "sprites", "start_screen.png")
+        try:
+            self.start_bg_raw = pygame.image.load(start_bg_path).convert_alpha()
+        except Exception:
+            self.start_bg_raw = None
+        self._start_bg_cache = {}
+
         # Global hospital floor background
         floor_path = os.path.join(base_dir, "sprites", "hospital_floor.png")
         try:
@@ -970,12 +978,53 @@ class RetroSimICU:
 
     def draw_intro_overlay(self):
         """Intro screen with title, description, and Play button."""
-        self.screen.fill(BLACK)
+        if getattr(self, "start_bg_raw", None):
+            key = (self.width, self.height)
+            if key not in self._start_bg_cache:
+                self._start_bg_cache[key] = pygame.transform.smoothscale(self.start_bg_raw, (self.width, self.height))
+            self.screen.blit(self._start_bg_cache[key], (0, 0))
+        else:
+            self.screen.fill(BLACK)
         title = self.title_font.render("SIMICU - RETRO MODE", self.retro_antialias, YELLOW)
         subtitle = self.large_font.render("HUMAN VS AI ICU MANAGEMENT", self.retro_antialias, WHITE)
         self.screen.blit(title, ((self.width - title.get_width()) // 2, 120))
         self.screen.blit(subtitle, ((self.width - subtitle.get_width()) // 2, 165))
 
+        # Spacing anchor for buttons
+        y = 220
+
+        btn_w, btn_h = 220, 56
+        btn_x = (self.width - btn_w) // 2
+        btn_y = y + 180
+        pygame.draw.rect(self.screen, BLUE, (btn_x, btn_y, btn_w, btn_h), border_radius=6)
+        pygame.draw.rect(self.screen, WHITE, (btn_x, btn_y, btn_w, btn_h), 2, border_radius=6)
+        btn_text = self.large_font.render("START GAME", self.retro_antialias, WHITE)
+        self.screen.blit(btn_text, (btn_x + (btn_w - btn_text.get_width()) // 2,
+                                    btn_y + (btn_h - btn_text.get_height()) // 2))
+        self._intro_button = (btn_x, btn_y, btn_w, btn_h)
+
+        # Rules button under start
+        r_w, r_h = 220, 48
+        r_x = btn_x
+        r_y = btn_y + btn_h + 16
+        pygame.draw.rect(self.screen, DARK_GRAY, (r_x, r_y, r_w, r_h), border_radius=6)
+        pygame.draw.rect(self.screen, WHITE, (r_x, r_y, r_w, r_h), 2, border_radius=6)
+        r_text = self.font.render("RULES", self.retro_antialias, WHITE)
+        self.screen.blit(r_text, (r_x + (r_w - r_text.get_width()) // 2,
+                                  r_y + (r_h - r_text.get_height()) // 2))
+        self._intro_rules_button = (r_x, r_y, r_w, r_h)
+        pygame.display.flip()
+
+    def draw_rules_overlay(self):
+        if getattr(self, "start_bg_raw", None):
+            key = (self.width, self.height)
+            if key not in self._start_bg_cache:
+                self._start_bg_cache[key] = pygame.transform.smoothscale(self.start_bg_raw, (self.width, self.height))
+            self.screen.blit(self._start_bg_cache[key], (0, 0))
+        else:
+            self.screen.fill(BLACK)
+        title = self.title_font.render("RULES", self.retro_antialias, YELLOW)
+        self.screen.blit(title, ((self.width - title.get_width()) // 2, 100))
         lines = [
             "Goal: Save as many patients as possible with limited beds, nurses, and ventilators.",
             "Patients worsen while waiting; treatment has setup delays; step-down beds cause ICU gridlock.",
@@ -983,23 +1032,24 @@ class RetroSimICU:
             "How to Play:",
             " - Click a patient in the waiting room to select.",
             " - Click an available bed to admit, or a ventilator to escalate.",
-            " - SPACE: Pause/Resume   R: Reset",
+            " - SPACE: Pause/Resume",
+            " - R: Reset",
         ]
-        y = 220
+        y = 170
         for line in lines:
-            t = self.font.render(line, self.retro_antialias, LIGHT_GRAY)
-            self.screen.blit(t, (100, y))
-            y += 24
-
-        btn_w, btn_h = 220, 56
-        btn_x = (self.width - btn_w) // 2
-        btn_y = y + 30
-        pygame.draw.rect(self.screen, BLUE, (btn_x, btn_y, btn_w, btn_h), border_radius=6)
-        pygame.draw.rect(self.screen, WHITE, (btn_x, btn_y, btn_w, btn_h), 2, border_radius=6)
-        btn_text = self.large_font.render("PLAY", self.retro_antialias, WHITE)
-        self.screen.blit(btn_text, (btn_x + (btn_w - btn_text.get_width()) // 2,
-                                    btn_y + (btn_h - btn_text.get_height()) // 2))
-        self._intro_button = (btn_x, btn_y, btn_w, btn_h)
+            t = self.font.render(line, self.retro_antialias, WHITE if line and line[0] != ' ' else LIGHT_GRAY)
+            self.screen.blit(t, (80, y))
+            y += 28
+        # Back button
+        b_w, b_h = 200, 50
+        b_x = (self.width - b_w) // 2
+        b_y = y + 30
+        pygame.draw.rect(self.screen, BLUE, (b_x, b_y, b_w, b_h), border_radius=6)
+        pygame.draw.rect(self.screen, WHITE, (b_x, b_y, b_w, b_h), 2, border_radius=6)
+        b_text = self.large_font.render("BACK", self.retro_antialias, WHITE)
+        self.screen.blit(b_text, (b_x + (b_w - b_text.get_width()) // 2,
+                                  b_y + (b_h - b_text.get_height()) // 2))
+        self._rules_back_button = (b_x, b_y, b_w, b_h)
         pygame.display.flip()
     
     def run(self):
@@ -1013,17 +1063,35 @@ class RetroSimICU:
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
                         if self.show_intro:
+                            mx, my = event.pos
                             if hasattr(self, "_intro_button"):
                                 bx, by, bw, bh = self._intro_button
-                                mx, my = event.pos
                                 if bx <= mx <= bx + bw and by <= my <= by + bh:
                                     self.show_intro = False
+                                    continue
+                            if hasattr(self, "_intro_rules_button"):
+                                rx, ry, rw, rh = self._intro_rules_button
+                                if rx <= mx <= rx + rw and ry <= my <= ry + rh:
+                                    self.show_intro = False
+                                    self.show_rules = True
+                                    continue
                             continue
+                        if getattr(self, "show_rules", False):
+                            mx, my = event.pos
+                            if hasattr(self, "_rules_back_button"):
+                                bx, by, bw, bh = self._rules_back_button
+                                if bx <= mx <= bx + bw and by <= my <= by + bh:
+                                    self.show_rules = False
+                                    self.show_intro = True
+                                    continue
                         self.handle_click(event.pos)
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_SPACE:
                         if self.show_intro:
                             self.show_intro = False
+                        elif getattr(self, "show_rules", False):
+                            self.show_rules = False
+                            self.show_intro = True
                         else:
                             self.paused = not self.paused
                     elif event.key == pygame.K_r:
@@ -1042,8 +1110,8 @@ class RetroSimICU:
                         self.update_every_n_frames = max(1, self.update_every_n_frames - 1)
             
             if not self.paused:
-                # Update game
-                if not self.show_intro:
+                # Update game only when not on intro or rules screens
+                if (not self.show_intro) and (not getattr(self, "show_rules", False)):
                     self._frame_counter = (self._frame_counter + 1) % self.update_every_n_frames
                     if self._frame_counter == 0:
                         for _ in range(self.tick_speed):
