@@ -71,6 +71,8 @@ class RetroSimICU:
         self.nurse_speed = 30      # pixels per tick
         self.nurse_size = 48       # draw size (bigger nurse)
         self.nurse_paths = {}      # nurse -> [(x, y), ...] waypoints
+        self.pending_assignments = []  # [{'nurse': Nurse, 'patient': Patient, 'bed': Bed}]
+        self.input_cooldown_ticks = 0  # limit human action rate
         
         # UI layout
         self.waiting_room_y = 50
@@ -159,6 +161,11 @@ class RetroSimICU:
         if size is None:
             size = self.nurse_size
         """Compute the target (x, y) for a nurse: patient location if assigned, else station."""
+        # If a pending assignment exists for this nurse, head to that bed
+        for task in self.pending_assignments:
+            if task['nurse'] == nurse and task['bed'] in self.bed_positions:
+                tx, ty, tw, th = self.bed_positions[task['bed']]
+                return tx + tw - size, ty
         # If assigned, target the patient's bed/vent center
         if not nurse.available:
             assigned_patient = None
@@ -248,6 +255,25 @@ class RetroSimICU:
             else:
                 new_x, new_y = wx, wy
             self.nurse_positions[nurse] = (new_x, new_y)
+
+        # Check pending assignments: if nurse reached bed, perform assignment now
+        if self.pending_assignments:
+            remaining = []
+            for task in self.pending_assignments:
+                nurse = task['nurse']
+                patient = task['patient']
+                bed = task['bed']
+                # Bed rect
+                if bed in self.bed_positions and nurse in self.nurse_positions:
+                    bx, by, bw, bh = self.bed_positions[bed]
+                    nx, ny = self.nurse_positions[nurse]
+                    # Simple proximity check
+                    if (bx - 4) <= nx <= (bx + bw + 4) and (by - 4) <= ny <= (by + bh + 4):
+                        # Try to assign now
+                        self.game.assign_patient_to_bed(patient)
+                        continue  # done with this task
+                remaining.append(task)
+            self.pending_assignments = remaining
     
     def draw_ventilator(self, vent, x, y, width=100, height=60):
         """Draw a ventilator icon"""
@@ -334,6 +360,8 @@ class RetroSimICU:
     
     def handle_click(self, pos):
         """Handle mouse click"""
+        if self.input_cooldown_ticks > 0:
+            return
         x, y = pos
         
         # Check if clicking in waiting room
@@ -357,7 +385,29 @@ class RetroSimICU:
                 if (bed_x <= x <= bed_x + 120 and 
                     bed_y + bed_y_offset <= y <= bed_y + bed_y_offset + 120):
                     if self.selected_patient and bed.available:
-                        self.game.assign_patient_to_bed(self.selected_patient)
+                        # Find nearest available nurse (by current animated position), else ignore
+                        available_nurses = [n for n in self.game.nurses if n.available]
+                        if not available_nurses:
+                            return
+                        # Compute bed target point
+                        bx, by, bw, bh = bed_x, bed_y + bed_y_offset, 120, 120
+                        target_x = bx + bw - self.nurse_size
+                        target_y = by
+                        # Ensure nurse positions initialized
+                        for n in available_nurses:
+                            if n not in self.nurse_positions:
+                                self.nurse_positions[n] = self.nurse_stations.get(n, (850, self.bed_area_y + 50))
+                        # Pick nearest
+                        def dist2(n):
+                            nx, ny = self.nurse_positions.get(n, (target_x, target_y))
+                            dx = nx - target_x
+                            dy = ny - target_y
+                            return dx * dx + dy * dy
+                        nearest = min(available_nurses, key=dist2)
+                        # Queue assignment: nurse will run to bed, then we assign
+                        self.pending_assignments.append({'nurse': nearest, 'patient': self.selected_patient, 'bed': bed})
+                        # Small input cooldown to simulate human latency
+                        self.input_cooldown_ticks = 8
                         self.selected_patient = None
                     return
             
@@ -460,6 +510,9 @@ class RetroSimICU:
                 # Update game
                 for _ in range(self.tick_speed):
                     self.game.update_tick()
+                # Decrement human input cooldown
+                if self.input_cooldown_ticks > 0:
+                    self.input_cooldown_ticks -= 1
             
             self.draw()
             self.clock.tick(10)  # 10 FPS for retro feel

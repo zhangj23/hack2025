@@ -20,7 +20,7 @@ class SimICUEnv(gym.Env):
     
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
     
-    def __init__(self, max_patients: int = 10, max_ticks: int = 300, render_mode=None):
+    def __init__(self, max_patients: int = 10, max_ticks: int = 300, render_mode=None, arrival_rate: float | None = None):
         super(SimICUEnv, self).__init__()
         
         self.max_patients = max_patients
@@ -28,7 +28,7 @@ class SimICUEnv(gym.Env):
         self.render_mode = render_mode
         
         # Initialize the core simulation engine
-        self.game = SimICU()
+        self.game = SimICU(arrival_rate=arrival_rate if arrival_rate is not None else 0.10)
         
         # Define action space
         # Action: [patient_id, action_type]
@@ -145,6 +145,23 @@ class SimICUEnv(gym.Env):
         if valid_patient and resource_available:
             actual_patient_id = valid_patient.id
             action_applied = bool(self.game.perform_action(actual_patient_id, action_type))
+        else:
+            # Soft action masking: remap invalid action to best valid one
+            waiting_patients = [p for p in self.game.patients if p.status == PatientStatus.WAITING]
+            waiting_patients.sort(key=lambda p: p.severity, reverse=True)
+            if action_type == 1 and self.game.free_vents > 0 and waiting_patients:
+                # Try ventilator for the most critical waiting patient
+                target = waiting_patients[0]
+                action_applied = bool(self.game.perform_action(target.id, 1))
+                # Reduce penalty if we remapped to useful action
+                if action_applied:
+                    step_penalty = min(step_penalty, 0.0)
+            elif action_type == 0 and self.game.free_beds > 0 and self.game.free_nurses > 0 and waiting_patients:
+                # Try bed for the most critical waiting patient
+                target = waiting_patients[0]
+                action_applied = bool(self.game.perform_action(target.id, 0))
+                if action_applied:
+                    step_penalty = min(step_penalty, 0.0)
 
         # Track severity before update (for shaping reward)
         prev_total_severity = sum(p.severity for p in self.game.patients)
@@ -163,12 +180,16 @@ class SimICUEnv(gym.Env):
         delta_severity = prev_total_severity - new_total_severity
         reward += 0.2 * delta_severity  # positive if severity decreased
 
+        # Small penalty when treatment setup delay is incurred (switching/upgrading introduces lag)
+        if self.game.just_incurred_setup_delay:
+            reward -= 0.5
+
         # Bonus for successful resource assignments (encourage acting)
         if action_applied:
             if action_type == 0:  # bed
-                reward += 1.0
+                reward += 2.0
             elif action_type == 1:  # ventilator
-                reward += 3.0
+                reward += 5.0
 
         # Penalty for idling when there is work to do (waiting patients and free resources)
         if action_type == 2:
@@ -201,17 +222,15 @@ class SimICUEnv(gym.Env):
         if self.game.just_lost_a_patient:
             reward -= 150.0  # slightly stronger penalty to discourage losses
 
-        # Dense shaping rewards per step
+        # Dense shaping rewards per step (tuned)
         waiting = self.game.total_waiting_patients
-        in_bed = len([p for p in self.game.patients if p.status == PatientStatus.IN_BED])
-        on_vent = len([p for p in self.game.patients if p.status == PatientStatus.ON_VENTILATOR])
+        treated = len([p for p in self.game.patients if p.status in [PatientStatus.IN_BED, PatientStatus.ON_VENTILATOR]])
 
-        # Encourage active treatment
-        reward += 1.0 * in_bed
-        reward += 2.0 * on_vent
+        # Encourage treatment
+        reward += 0.5 * treated
 
-        # Mild penalty for waiting
-        reward -= 0.05 * waiting
+        # Stronger penalty for patients waiting
+        reward -= 0.2 * waiting
 
         return reward
     

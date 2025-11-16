@@ -29,21 +29,32 @@ class Patient:
         self.assigned_nurse = None
         self.assigned_bed = None
         self.assigned_ventilator = None
+        # Setup times: when (re)assigned, treatment is delayed during setup
+        self.bed_setup_ticks = 0
+        self.vent_setup_ticks = 0
         
     def update(self):
         """Update patient state each tick"""
         if self.status == PatientStatus.WAITING:
             self.time_waiting += 1
             # Severity increases while waiting (patient getting worse)
-            self.severity = min(100, self.severity + 1)
+            # Accelerating deterioration: every 10 ticks of waiting adds +1 extra
+            extra = self.time_waiting // 10
+            self.severity = min(100, self.severity + 1 + extra)
             
         elif self.status == PatientStatus.IN_BED:
-            # Severity decreases with bed + nurse care
-            self.severity = max(0, self.severity - 2)
+            # Severity decreases with bed + nurse care (tuned faster)
+            if self.bed_setup_ticks > 0:
+                self.bed_setup_ticks -= 1
+            else:
+                self.severity = max(0, self.severity - 3)
             
         elif self.status == PatientStatus.ON_VENTILATOR:
-            # Severity decreases faster with ventilator
-            self.severity = max(0, self.severity - 5)
+            # Severity decreases faster with ventilator (tuned much faster)
+            if self.vent_setup_ticks > 0:
+                self.vent_setup_ticks -= 1
+            else:
+                self.severity = max(0, self.severity - 8)
         
         # Check for state transitions
         if self.severity <= 0 and self.status != PatientStatus.CURED:
@@ -118,6 +129,7 @@ class SimICU:
         # Track state changes for reward calculation
         self.just_saved_a_patient = False
         self.just_lost_a_patient = False
+        self.just_incurred_setup_delay = False
         
         # Initialize private resource counters
         self._free_beds = num_beds
@@ -202,6 +214,8 @@ class SimICU:
             bed.available = False
             nurse.available = False
             patient.status = PatientStatus.IN_BED
+            # Setup delay before treatment starts
+            patient.bed_setup_ticks = 3
             # Decrement counters
             self._free_beds -= 1
             self._free_nurses -= 1
@@ -228,6 +242,8 @@ class SimICU:
             patient.assigned_ventilator = ventilator
             ventilator.available = False
             patient.status = PatientStatus.ON_VENTILATOR
+            # Setup delay before ventilator effect starts
+            patient.vent_setup_ticks = 5
             # Decrement ventilator counter
             self._free_vents -= 1
             return True
@@ -254,6 +270,9 @@ class SimICU:
             return False
         elif action_type == 1:  # Assign to ventilator
             if self._free_vents > 0:
+                # If upgrading from bed to ventilator, this incurs a setup delay (tracked for reward shaping)
+                if patient.status == PatientStatus.IN_BED:
+                    self.just_incurred_setup_delay = True
                 return self.assign_patient_to_ventilator(patient)
             return False
         elif action_type == 2:  # Do nothing
@@ -266,6 +285,7 @@ class SimICU:
         self.tick += 1
         self.just_saved_a_patient = False
         self.just_lost_a_patient = False
+        self.just_incurred_setup_delay = False
         
         # Check for new patient arrivals
         if self.tick >= self.next_arrival:

@@ -27,11 +27,11 @@ def train_agent(total_timesteps=100000, save_path="models/sim_icu_ai_agent"):
     os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True)
     
     print("\n1. Creating environment...")
-    # Vectorized training environment (4 parallel envs)
-    env = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None)), n_envs=4)
+    # Vectorized training environment (4 parallel envs) with curriculum: easy first (arrival 0.05)
+    env = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.05)), n_envs=4)
  
-    # Create evaluation environment (single env, vectorized with n_envs=1)
-    eval_env = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None)), n_envs=1)
+    # Create evaluation environment (harder arrival rate to measure true performance)
+    eval_env = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.10)), n_envs=1)
     
     # Create the AI agent using PPO (Proximal Policy Optimization)
     print("2. Creating PPO agent...")
@@ -86,11 +86,25 @@ def train_agent(total_timesteps=100000, save_path="models/sim_icu_ai_agent"):
         print("   Install with: pip install tqdm rich\n")
         use_progress_bar = False
     
+    # Curriculum: first stage on easier arrivals, then harder
+    stage1 = max(50000, int(total_timesteps * 0.33))
+    stage2 = max(0, total_timesteps - stage1)
+
     model.learn(
-        total_timesteps=total_timesteps,
+        total_timesteps=stage1,
         callback=[eval_callback, checkpoint_callback],
         progress_bar=use_progress_bar
     )
+
+    if stage2 > 0:
+        # Switch to harder environment
+        env_hard = make_vec_env(lambda: Monitor(SimICUEnv(max_patients=10, max_ticks=300, render_mode=None, arrival_rate=0.10)), n_envs=4)
+        model.set_env(env_hard)
+        model.learn(
+            total_timesteps=stage2,
+            callback=[eval_callback, checkpoint_callback],
+            progress_bar=use_progress_bar
+        )
     
     # Save the final model
     print(f"\n5. Saving trained model to {save_path}...")
