@@ -732,8 +732,6 @@ class RetroSimICU:
             "1. Click patient to select",
             "2. Click bed to assign",
             "3. Click vent for critical",
-            "+/-: Speed up/down",
-            "[ / ]: Slow/Fast ticks",
             "SPACE: Pause/Resume",
             "R: Reset game"
         ]
