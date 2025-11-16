@@ -127,7 +127,9 @@ class ModernSimICU:
         except Exception:
             self.divider_sprite_raw = None
         self._divider_cache_by_height = {}
-        self.divider_width_scale = 1.25
+        self.divider_width_scale = 1.5
+        self.divider_height_scale = 1.5
+        self.divider_left_shift = -16
     
     def draw_patient(self, patient, x, y, width=100, height=80, minimal=False):
         """Draw a patient icon (sprite if available).
@@ -205,11 +207,9 @@ class ModernSimICU:
     
     def draw_bed(self, bed, x, y, width=120, height=120):
         """Draw a bed tile and overlay patient info when occupied."""
-        # Base tile
+        # Base tile (no outline)
         color = LIGHT_GRAY if bed.available else DARK_GRAY
         pygame.draw.rect(self.screen, color, (x, y, width, height))
-        border = GREEN if bed.available else RED
-        pygame.draw.rect(self.screen, border, (x, y, width, height), 2)
         # Occupied overlay
         if not bed.available:
             if getattr(self, "patient_in_bed_sprite_raw", None):
@@ -253,7 +253,6 @@ class ModernSimICU:
         """Draw a ventilator icon"""
         color = LIGHT_GRAY if vent.available else DARK_GRAY
         pygame.draw.rect(self.screen, color, (x, y, width, height))
-        pygame.draw.rect(self.screen, BLACK, (x, y, width, height), 2)
         
         label = "VENT" if vent.available else "IN USE"
         label_text = self.small_font.render(label, True, BLACK if vent.available else WHITE)
@@ -263,13 +262,16 @@ class ModernSimICU:
         # Divider to the right
         if self.divider_sprite_raw:
             h = height
-            if h not in self._divider_cache_by_height:
+            key_h = (height, self.divider_width_scale, self.divider_height_scale)
+            if key_h not in self._divider_cache_by_height:
                 base_w = self.divider_sprite_raw.get_width()
                 base_h = self.divider_sprite_raw.get_height()
-                sw = int(base_w * (h / base_h) * self.divider_width_scale)
-                self._divider_cache_by_height[h] = pygame.transform.smoothscale(self.divider_sprite_raw, (max(1, sw), h))
-            pad = 16
-            self.screen.blit(self._divider_cache_by_height[h], (x + width + pad, y))
+                sh = int(h * self.divider_height_scale)
+                sw = int(base_w * (sh / base_h) * self.divider_width_scale)
+                self._divider_cache_by_height[key_h] = pygame.transform.smoothscale(self.divider_sprite_raw, (max(1, sw), max(1, sh)))
+            pad = 8
+            surf = self._divider_cache_by_height[key_h]
+            self.screen.blit(surf, (x + width + pad + self.divider_left_shift, y + (h - surf.get_height()) // 2))
     
     def draw_ui_panel(self):
         """Draw the UI information panel"""
@@ -392,12 +394,10 @@ class ModernSimICU:
             self.draw_patient(patient, 50 + i * 120, self.waiting_room_y + 20, minimal=True)
         
         # Draw bed area (shifted right to match Retro layout)
-        bed_title = self.font.render("ICU BEDS", self.retro_antialias, WHITE)
-        self.screen.blit(bed_title, (200, self.bed_area_y - 30))
         
         for i, bed in enumerate(self.env.game.beds):
             bed_x = 200 + (i % 4) * 150
-            bed_y = self.bed_area_y + 50 + (i // 4) * 120
+            bed_y = self.bed_area_y + 0 + (i // 4) * 120
             self.draw_bed(bed, bed_x, bed_y)
             
             # Draw patient in bed if occupied
@@ -407,12 +407,10 @@ class ModernSimICU:
                         self.draw_patient(patient, bed_x + 10, bed_y - 20, 100, 60)
         
         # Draw ventilators (on the left)
-        vent_title = self.font.render("VENTILATORS", self.retro_antialias, WHITE)
-        self.screen.blit(vent_title, (50, self.bed_area_y - 30))
         
         for i, vent in enumerate(self.env.game.ventilators):
             vent_x = 50
-            vent_y = self.bed_area_y + 50 + i * 80
+            vent_y = self.bed_area_y + 0 + i * 80
             self.draw_ventilator(vent, vent_x, vent_y)
             
             # Draw patient on ventilator if occupied
@@ -420,11 +418,9 @@ class ModernSimICU:
                 if patient.assigned_ventilator == vent:
                     self.draw_patient(patient, vent_x + 10, vent_y - 20, 100, 60)
         
-        # Draw nurses
-        nurse_title = self.font.render("NURSES", True, WHITE)
-        self.screen.blit(nurse_title, (850, self.bed_area_y - 30))
+        # Draw nurses (starting positions moved up by 50px)
         for i, nurse in enumerate(self.env.game.nurses):
-            self.draw_nurse(nurse, 850, self.bed_area_y + 50 + i * 56, self.nurse_size)
+            self.draw_nurse(nurse, 850, self.bed_area_y + 0 + i * 56, self.nurse_size)
         
         # Draw UI panel
         self.draw_ui_panel()

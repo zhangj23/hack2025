@@ -140,8 +140,10 @@ class RetroSimICU:
         except Exception:
             self.divider_sprite_raw = None
         self._divider_cache_by_height = {}
-        # Make dividers slightly wider
-        self.divider_width_scale = 1.25
+        # Make dividers larger
+        self.divider_width_scale = 1.5
+        self.divider_height_scale = 1.5
+        self.divider_left_shift = -40  # move further left toward ventilators
 
         # Object position maps for animation targets
         self.bed_positions = {}   # bed -> (x, y, w, h)
@@ -318,7 +320,6 @@ class RetroSimICU:
                     self.screen.blit(sprite, (x, y))
                 else:
                     pygame.draw.rect(self.screen, LIGHT_GRAY, (x, y, width, height))
-                pygame.draw.rect(self.screen, GREEN, (x, y, width, height), 2)
             else:
                 # occupied bed -> draw patient-in-bed sprite if available
                 if self.patient_in_bed_sprite_raw:
@@ -335,14 +336,12 @@ class RetroSimICU:
                 else:
                     # fallback rectangle for occupied
                     pygame.draw.rect(self.screen, DARK_GRAY, (x, y, width, height))
-                pygame.draw.rect(self.screen, RED, (x, y, width, height), 2)
         else:
             if bed.available:
                 color = LIGHT_GRAY
             else:
                 color = DARK_GRAY
             pygame.draw.rect(self.screen, color, (x, y, width, height))
-            pygame.draw.rect(self.screen, BLACK, (x, y, width, height), 2)
             # Bed label
             label = "BED" if bed.available else "OCCUPIED"
             label_text = self.small_font.render(label, True, BLACK if bed.available else WHITE)
@@ -417,15 +416,15 @@ class RetroSimICU:
                     # Aim near top-right corner
                     return tx + tw - size, ty
         # Otherwise, go to station
-        return self.nurse_stations.get(nurse, (850, self.bed_area_y + 50))
+        return self.nurse_stations.get(nurse, (850, self.bed_area_y + 0))
 
     def _row_corridor_y(self):
         """
         Return a safe Y corridor between bed rows to avoid walking through beds.
         Assumes two rows laid out by 120px height tiles with a gap.
         """
-        # Row 0 top is self.bed_area_y + 50, row 1 top is +120
-        return self.bed_area_y + 50 + 120 + 10  # 10px gap between rows
+        # Row 0 top is self.bed_area_y + 0, row 1 top is +120
+        return self.bed_area_y + 0 + 120 + 10  # 10px gap between rows
 
     def _plan_path(self, cur, target, use_corridor=True):
         """
@@ -462,7 +461,7 @@ class RetroSimICU:
             # Initialize position at station if unknown
             if nurse not in self.nurse_positions:
                 # Start idle nurses at their station
-                station_pos = self.nurse_stations.get(nurse, (850, self.bed_area_y + 50))
+                station_pos = self.nurse_stations.get(nurse, (850, self.bed_area_y + 0))
                 self.nurse_positions[nurse] = station_pos
                 self.nurse_paths[nurse] = []
                 continue
@@ -475,7 +474,7 @@ class RetroSimICU:
             # If idle, target should be station and avoid corridor to prevent oscillation
             use_corridor = not is_idle
             if is_idle:
-                target_x, target_y = self.nurse_stations.get(nurse, (850, self.bed_area_y + 50))
+                target_x, target_y = self.nurse_stations.get(nurse, (850, self.bed_area_y + 0))
                 # Snap to station if already very close
                 if abs(cur_x - target_x) <= 1 and abs(cur_y - target_y) <= 1:
                     self.nurse_positions[nurse] = (target_x, target_y)
@@ -636,7 +635,6 @@ class RetroSimICU:
                 self.screen.blit(self._vent_bed_cache[key], (x, y))
             else:
                 pygame.draw.rect(self.screen, LIGHT_GRAY, (x, y, width, height))
-            pygame.draw.rect(self.screen, GREEN, (x, y, width, height), 2)
         else:
             if getattr(self, "vent_patient_raw", None):
                 key = (width, height)
@@ -645,7 +643,6 @@ class RetroSimICU:
                 self.screen.blit(self._vent_patient_cache[key], (x, y))
             else:
                 pygame.draw.rect(self.screen, DARK_GRAY, (x, y, width, height))
-            pygame.draw.rect(self.screen, RED, (x, y, width, height), 2)
             # Overlay health bar for the patient on this ventilator
             try:
                 from sim_icu_logic import PatientStatus  # local import to avoid circulars at top
@@ -661,15 +658,17 @@ class RetroSimICU:
         # Draw divider to the right of each ventilator if sprite available
         if self.divider_sprite_raw:
             h = height
-            if h not in self._divider_cache_by_height:
+            key_h = (height, self.divider_width_scale, self.divider_height_scale)
+            if key_h not in self._divider_cache_by_height:
                 base_w = self.divider_sprite_raw.get_width()
                 base_h = self.divider_sprite_raw.get_height()
-                sw = int(base_w * (h / base_h) * self.divider_width_scale)
-                self._divider_cache_by_height[h] = pygame.transform.smoothscale(self.divider_sprite_raw, (max(1, sw), h))
-            divider_surf = self._divider_cache_by_height[h]
-            # Place divider between ventilators and beds
-            pad = 16
-            self.screen.blit(divider_surf, (x + width + pad, y))
+                sh = int(h * self.divider_height_scale)
+                sw = int(base_w * (sh / base_h) * self.divider_width_scale)
+                self._divider_cache_by_height[key_h] = pygame.transform.smoothscale(self.divider_sprite_raw, (max(1, sw), max(1, sh)))
+            divider_surf = self._divider_cache_by_height[key_h]
+            # Place divider between ventilators and beds, a bit left and closer
+            pad = 8
+            self.screen.blit(divider_surf, (x + width + pad + self.divider_left_shift, y + (h - divider_surf.get_height()) // 2))
     
     def draw_ui_panel(self):
         """Draw the UI information panel"""
@@ -770,7 +769,7 @@ class RetroSimICU:
         # Check if clicking on beds
         if y >= self.bed_area_y and y <= self.bed_area_y + self.bed_area_height:
             bed_x_start = 200
-            bed_y = self.bed_area_y + 50
+            bed_y = self.bed_area_y + 0
             for i, bed in enumerate(self.game.beds):
                 bed_x = bed_x_start + (i % 4) * 150
                 bed_y_offset = (i // 4) * 120
@@ -788,7 +787,7 @@ class RetroSimICU:
                         # Ensure nurse positions initialized
                         for n in available_nurses:
                             if n not in self.nurse_positions:
-                                self.nurse_positions[n] = self.nurse_stations.get(n, (850, self.bed_area_y + 50))
+                                self.nurse_positions[n] = self.nurse_stations.get(n, (850, self.bed_area_y + 0))
                         # Pick nearest
                         def dist2(n):
                             nx, ny = self.nurse_positions.get(n, (target_x, target_y))
@@ -825,7 +824,7 @@ class RetroSimICU:
             vent_x_start = 50
             for i, vent in enumerate(self.game.ventilators):
                 vent_x = vent_x_start
-                vent_y = self.bed_area_y + 50 + i * 120
+                vent_y = self.bed_area_y + 0 + i * 120
                 if (vent_x <= x <= vent_x + 120 and 
                     vent_y <= y <= vent_y + 120):
                     if self.selected_patient and vent.available:
@@ -835,7 +834,7 @@ class RetroSimICU:
                             return
                         for n in available_nurses:
                             if n not in self.nurse_positions:
-                                self.nurse_positions[n] = self.nurse_stations.get(n, (850, self.bed_area_y + 50))
+                                self.nurse_positions[n] = self.nurse_stations.get(n, (850, self.bed_area_y + 0))
                         def dist2(n):
                             nx, ny = self.nurse_positions.get(n, (vent_x, vent_y))
                             dx = nx - vent_x
@@ -903,12 +902,10 @@ class RetroSimICU:
             self.draw_patient(patient, 50 + i * 120, self.waiting_room_y + 20, minimal=True)
         
         # Draw bed area (shifted right to make room for ventilators on the left)
-        bed_title = self.font.render("ICU BEDS", self.retro_antialias, WHITE)
-        self.screen.blit(bed_title, (200, self.bed_area_y - 30))
         
         for i, bed in enumerate(self.game.beds):
             bed_x = 200 + (i % 4) * 150
-            bed_y = self.bed_area_y + 50 + (i // 4) * 120
+            bed_y = self.bed_area_y + 0 + (i // 4) * 120
             self.draw_bed(bed, bed_x, bed_y)
             
             # Draw patient in bed if occupied
@@ -920,12 +917,10 @@ class RetroSimICU:
                         self.draw_patient(patient, bed_x + 10, bed_y - 20, 100, 60)
         
         # Draw ventilators (moved to the left side)
-        vent_title = self.font.render("VENTILATORS", self.retro_antialias, WHITE)
-        self.screen.blit(vent_title, (50, self.bed_area_y - 30))
         
         for i, vent in enumerate(self.game.ventilators):
             vent_x = 50
-            vent_y = self.bed_area_y + 50 + i * 120
+            vent_y = self.bed_area_y + 0 + i * 120
             self.draw_ventilator(vent, vent_x, vent_y)
             
             # If no vent_patient sprite is available, fall back to drawing the patient overlay.
@@ -952,12 +947,10 @@ class RetroSimICU:
                 )
 
         # Draw nurses (animated between station and patient)
-        nurse_title = self.font.render("NURSES", self.retro_antialias, WHITE)
-        self.screen.blit(nurse_title, (850, self.bed_area_y - 30))
         # Define stations (positions already updated above)
         for i, nurse in enumerate(self.game.nurses):
             station_x = 850
-            station_y = self.bed_area_y + 50 + i * 56
+            station_y = self.bed_area_y + 0 + i * 56
             self.nurse_stations[nurse] = (station_x, station_y)
         # Draw nurses at current positions
         for nurse in self.game.nurses:
