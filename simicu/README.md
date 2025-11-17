@@ -40,7 +40,7 @@ python retro_mode.py
 **Modern Mode (AI Agent):**
 
 ```bash
-python modern_mode.py
+python modern_ai_mode.py
 ```
 
 **Note**: Modern mode requires a trained model. If you don't have one, train it first (see below).
